@@ -1,0 +1,11 @@
+gprf_args:
+db_args:
+  host: localhost
+  port: 5432
+  user: cyberleu
+  password: cyberleu
+  db: imdb 
+  job_path: /data/homedata/lch/benchmark/join-order-benchmark/
+  job_plan_path: /data/homedata/lch/GPRF/
+net_args:
+train_args:
