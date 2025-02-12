@@ -4,14 +4,17 @@ from plan import *
 import yaml
 import glob
 from sklearn.model_selection import train_test_split
+import time
 
 SEED = 1234
 REAPEATED = 5
 MVSIZE = 3
 config_path = "config.yml"
+with open(config_path, 'r') as file:
+        d = yaml.load(file, Loader=yaml.FullLoader)
 
 def generate_select(cond, plan, item, selects) :
-    matches = re.findall(r'[a-z_]+[1-9]*\.[a-z]*', cond)
+    matches = re.findall(r'[a-z_]+[1-9]*\.[a-z_]*', cond)
     for match in matches:
         index  = match.find('.')
         table_name = plan.alias_to_table[match[:index]]
@@ -22,12 +25,19 @@ def generate_select(cond, plan, item, selects) :
     return selects  
 
 if __name__ == '__main__':
+    # for mvsize in range(2,6):
+    #     for repeated in range(3,9)
+    start = time.time()
     sub_plans_set = {}
-    with open(config_path, 'r') as file:
-        d = yaml.load(file, Loader=yaml.FullLoader)
-    job_path = d['db_args']['job_path']
-    # x_train = glob.glob(job_path + "27c.sql")
-    x_train,x_test = train_test_split(glob.glob(job_path + "[0-9]*.sql"),train_size=0.7)
+    job_train_path = d['db_args']['job_train_path']
+    # x_train = glob.glob(job_train_path + "27c.sql")
+    x_train,x_test = train_test_split(glob.glob(job_train_path + "[0-9]*.sql"),train_size=0.99)
+    conn = psycopg2.connect(host=d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
+    original_sqls = []
+    for sql_path in x_train:
+        with open(sql_path, 'r') as file:
+            q = file.read()
+            original_sqls.append(q)
     plans = []
     for i in range(len(x_train)):
         plan = build_and_save_optimizer_plan(x_train[i])
@@ -68,7 +78,7 @@ if __name__ == '__main__':
                 if len(cond['names']) == 1:
                     table_name = plan.alias_to_table[cond['names'][0]]
                     if table_name in item[0]:
-                        new_cond = table_name + cond['condition'][len(cond['names'][0]):]
+                        new_cond = re.sub(r'\b' + re.escape(cond['names'][0]) + r'\.', table_name + '.', cond['condition'])
                         if table_name in conditions:
                             conditions[table_name].append(new_cond)
                         else :
@@ -79,7 +89,7 @@ if __name__ == '__main__':
                     table_name2 = plan.alias_to_table[cond['names'][1]]
                     if table_name1 in item[0] and table_name2 not in item[0]:
                         selects = generate_select(cond['condition'], plan, item, selects)
-                    elif table_name1 in item[0] and table_name2 not in item[0]:
+                    elif table_name2 in item[0] and table_name1 not in item[0]:
                         selects = generate_select(cond['condition'], plan, item, selects)
                     elif table_name1 in item[0] and table_name2 in item[0]:
                         index = cond['condition'].find('=')
@@ -88,7 +98,7 @@ if __name__ == '__main__':
                         conditions[(table_name1, table_name2)] = [new_cond1 + ' = ' + new_cond2]
         for select in selects:
             mv_sql += select + ' , '
-        mv_sql = mv_sql[:-2] + ' FRROM '
+        mv_sql = mv_sql[:-2] + ' FROM '
         for table in item[0]:
             mv_sql += table + ' , ' 
         mv_sql = mv_sql[:-2] + ' WHERE '
@@ -107,19 +117,36 @@ if __name__ == '__main__':
         replaced_plan = replace_with_mv(plan, sql_with_mv[idx], mv_names)
         sql = generate_sql(replaced_plan)
         query_sqls.append(sql)
-        print(1)
+    end = time.time()
+    print(f"训练时间：{end-start}")
     conn = psycopg2.connect(host=d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
-    for sql in mv_sqls.append(query_sqls):
+    
+    start = time.time()
+    for sql in original_sqls:
         cur = conn.cursor()
         try:
             cur.execute(DB_SETTINGS)
             cur.execute(
                 f"{sql}")
-            data = cur.fetchall()
         except Exception as e:
             cur.close()
             db_rollback(conn)
             raise e
         cur.close()
+    end = time.time()
+    print(f"原始执行时间：{end-start}")
     
-
+    start = time.time()
+    for sql in mv_sqls + query_sqls:
+        cur = conn.cursor()
+        try:
+            cur.execute(DB_SETTINGS)
+            cur.execute(
+                f"{sql}")
+        except Exception as e:
+            cur.close()
+            db_rollback(conn)
+            raise e
+        cur.close()
+    end = time.time()
+    print(f"优化后执行时间：{end-start}")

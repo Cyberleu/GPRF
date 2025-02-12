@@ -1,11 +1,15 @@
-gprf_args:
+sys_args:
+  job_train_path: /data/homedata/lch/GPRF/data/train_data_small/
+  job_test_path: /data/homedata/lch/GPRF/data/test_data/
+  baseline_path: /data/homedata/lch/GPRF/data/baseline.json
+  job_plan_img_path: /data/homedata/lch/GPRF/
+  sql_batch_size: 5
+  mv_min_size: 3
 db_args:
   host: localhost
   port: 5432
-  user: cyberleu
-  password: cyberleu
+  user: postgres
+  password: postgres
   db: imdb 
-  job_path: /data/homedata/lch/benchmark/join-order-benchmark/
-  job_plan_path: /data/homedata/lch/GPRF/
 net_args:
 train_args:

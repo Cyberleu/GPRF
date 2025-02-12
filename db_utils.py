@@ -9,7 +9,7 @@ import psycopg2
 from moz_sql_parser import parse
 import os
 
-from plan import Plan
+from plan import SinglePlan
 
 DB_SETTINGS = """BEGIN;
                 SET enable_nestloop = off;
@@ -31,7 +31,7 @@ def build_and_save_optimizer_plan(sql_path):
         q = file.read()
     query_tables, reverse_aliases_dict, query_conditions, parsed_select = parse_sql_query(q)
     print(q)
-    p = Plan(query_tables, reverse_aliases_dict, query_conditions,parsed_select, q)
+    p = SinglePlan(query_tables, reverse_aliases_dict, query_conditions,parsed_select, q)
     plan, _ = explain_plan_parser(
         p, p.initial_query, conn, exec_time=False)
     return plan
@@ -49,6 +49,7 @@ def create_scheme(l_sch):
 def explain_analyze(sql_query, conn):
     cur = conn.cursor()
     try:
+        
         cur.execute(DB_SETTINGS)
         cur.execute(f"""EXPLAIN ANALYZE {sql_query}""")
         rows = cur.fetchall()
@@ -356,7 +357,7 @@ def get_cost_plan(p, conn, db, exec_time=False):
         query_plan, index_cond_names, join_cond_names
     )
 
-    plan = Plan(p.query_tables, p.alias_to_table,
+    plan = SinglePlan(p.query_tables, p.alias_to_table,
                 p.query_join_conditions, p.initial_query)
     for node, (c1, c2) in list_of_joins:
         new_node = plan.join(c1, c2)
@@ -422,7 +423,7 @@ def explain_plan_parser(plan, query, conn, exec_time=False):
     list_of_joins, joins_info, _, alias_to_table, _ = parse_explain_json_to_list_of_nodes(
         query_plan, index_cond_names, join_cond_names
     )
-    p = Plan(plan.query_tables, plan.alias_to_table,
+    p = SinglePlan(plan.query_tables, plan.alias_to_table,
              plan.query_join_conditions, plan.query_select, plan.initial_query)
     for node, (c1, c2) in list_of_joins:
         join_info = joins_info[node]

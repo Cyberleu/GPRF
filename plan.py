@@ -3,6 +3,8 @@ import json
 import re
 from collections import defaultdict, deque
 from copy import deepcopy
+from db_utils import *
+from main import d
 
 import networkx as nx
 import numpy as np
@@ -12,7 +14,8 @@ import logging
 LOG = logging.getLogger(__name__)
 
 
-class Plan():
+
+class SinglePlan():
     def __init__(self, query_tables=None, alias_to_table=None, query_join_conditions=None, query_select = None, initial_query=None, *args):
         self.query_tables = query_tables if query_tables else []
         self.alias_to_table = dict(
@@ -342,8 +345,12 @@ def replace_with_mv(plan, sql_with_mv, mv_names):
         # 对query中出现相同表连接进行特殊处理
         for tables in plan.sub_alias_tabls:
             if len(tables) == len(mv):
-                alias_mv = tables
-                break
+                flag = True
+                for i in range(len(mv)):
+                    if plan.alias_to_table[tables[i]] not in mv:
+                        flag = False
+                if flag:
+                    alias_mv = tables
         flag = False
         for alias in alias_mv:
             if alias in replaced_alias_tables:
@@ -356,7 +363,8 @@ def replace_with_mv(plan, sql_with_mv, mv_names):
             if len(name) == 1:
                 alias_name = name[0]
                 if  plan.alias_to_table[alias_name] in mv:
-                    plan.query_join_conditions[i]['condition'] = mv_names[mv] + '.' + re.sub(r'\.','_',plan.query_join_conditions[i]['condition'])
+                    new_cond = re.sub(r'\b' + re.escape(alias_name) + r'\.', mv_names[mv] + '.' + alias_name + '_', cond)
+                    plan.query_join_conditions[i]['condition'] =  new_cond
                     plan.query_join_conditions[i]['names'][0] = mv_names[mv]
             else:
                 alias_name1 = name[0]
@@ -365,11 +373,13 @@ def replace_with_mv(plan, sql_with_mv, mv_names):
                 if alias_name1 in alias_mv and alias_name2 in alias_mv:
                     del_list.append(i)
                 elif alias_name1 in alias_mv:
-                    plan.query_join_conditions[i]['condition'] = mv_names[mv] + '.' + re.sub(r'\.','_',cond[:index]) + cond[index:]
-                    plan.query_join_conditions[i]['names'][0] = mv_names[mv]
+                    new_cond = re.sub(r'\b' + re.escape(alias_name1) + r'\.', mv_names[mv] + '.' + alias_name1 + '_', cond)
+                    plan.query_join_conditions[i]['condition'] =  new_cond
+                    new_cond = plan.query_join_conditions[i]['names'][0] = mv_names[mv]
                 elif alias_name2 in alias_mv:
-                    plan.query_join_conditions[i]['condition'] = cond[:index] + mv_names[mv] + '.' + re.sub(r'\.','_',cond[index:])
-                    plan.query_join_conditions[i]['names'][0] = mv_names[mv]
+                    new_cond = re.sub(r'\b' + re.escape(alias_name2) + r'\.', mv_names[mv] + '.' + alias_name2 + '_', cond)
+                    plan.query_join_conditions[i]['condition'] =  new_cond
+                    plan.query_join_conditions[i]['names'][0] = mv_names[mv]  
         plan.query_join_conditions = np.delete(plan.query_join_conditions, del_list).tolist()
         # 替换select中的列名
         for i in range(len(plan.query_select)):
@@ -377,7 +387,7 @@ def replace_with_mv(plan, sql_with_mv, mv_names):
             index = col_name.find('.')
             if plan.alias_to_table[col_name[:index]] in mv:
                 new_col_name = mv_names[mv] + '.' + col_name[:index] + '_' + col_name[index + 1 :]
-                plan.query_select[i]['value']['MIN'] = new_col_name
+                plan.query_select[i]['value']['min'] = new_col_name
         for alias in alias_mv:
             replaced_alias_tables.append(alias)
         for alias in plan.alias_to_table.keys():
@@ -399,5 +409,77 @@ def generate_sql(plan):
     sql = sql[:-2] + ' WHERE '
     for cond in plan.query_join_conditions:
         sql += cond['condition'] + ' AND '
-    sql = sql[:-4]
+    sql = sql[:-4] + ';'
     return sql
+
+# 一个globalplan由若干个singlePlan组成，singlePlan之间可以用Share算子连接
+# node中包含的属性：1. type(scan, join, share) 2. table_entries, 孩子中包含的所有表，用于Share算子的替换
+# 3. cond , scan算子存储形式为：[{"col":"...", "op":"...", "pred":"..."},{""},..]， join/share算子为[{"left_entry_name":"...", "right_entry_name":"...", "left_col_name":"...", "right_col_name":"..."}]
+# 连接默认为等值连接，因此不需要记录op 4. share_list, 记录此share算子被哪些plan shared
+class GlobalPlan:
+    def __init__(self):
+        self.G = nx.DiGraph()
+        self.roots = [] # 保存每个singlePlan在globalPlan中对应的node id
+        self.singlePlans = []
+    def merge(self, plan):
+        plan = SinglePlan()
+        self.singlePlans.append(plan)
+        if(len(self.G) == 0):
+            self.G = plan.G
+            return
+        self.G = nx.union(self.G, plan.G, rename = ("Global", "Single"))
+        node1, node2 = self.find_shared_op()
+        if(node1 == -1):
+            # 无法Share，直接加入G, 新加入的plan以‘Plan(index)-’区分
+            self.G = nx.union(self.G, plan.G, rename = ("", "Plan{}-".format(len(self.singlePlans))))
+            self.roots.add("Plan{}-".format(plan.get_roots[0]))
+        else:
+            # 合并table上的谓词，join上的不用管
+            self.merge_cond(plan.G, node1, node2)
+            self.G.nodes[node1]["type"] = "Share"
+            self.G.nodes[node1]["share_list"].append(len(self.singlePlans)-1)
+            pres = list(plan.G.predecessors(node2))
+            # 
+            if(len(pres) == 0):
+                self.roots.add(node1)
+            else:
+                self.G = nx.union(self.G, plan.G, rename = ("", "Plan{}-".format(len(self.singlePlans))))
+                self.roots.add("Plan{}-".format(plan.get_roots[0]))
+                
+
+    # 对于子树覆盖相同表的节点可视为Share算子
+    def find_shared_op(self, g2):
+        # 越靠后连接的编号越大， 我们要找的是尽可能覆盖多表的
+        for i in range(g2.number_of_nodes()-1,-1,-1):
+            other_table_entries = g2.nodes[i]["table_entries"]
+            for node, node_data in self.G.nodes.items():
+                if(node_data["table_entries"] == other_table_entries and len(other_table_entries) >= d['sys_args']['mv_min_size']):
+                    return node, i
+        return -1, -1
+        
+    # 合并node1和node2子树中scan算子中的所有cond
+    def merge_cond(self, g2, node1, node2):
+        assert self.G.nodes[node1]["table_entries"] == g2.nodes[node2]["table_entries"]
+        for node_idx, node_data in g2.nodes.items():
+            if(node_data["type"] == "Scan"):
+                nodes = self.lookup_by_value_within_node(node1, "table_entries", node_data["table_entries"][0])
+                self.G.nodes[nodes[0]]["cond"].append(node_data["cond"])
+    
+    # 在指定node的子树中查找key的value为target的node
+    def lookup_by_value_within_node(self, node_index, key, target):
+        nodes = []
+        successors = list(nx.descendants(self.G, node_index))
+        subgraph_nodes = [node_index] + successors
+        H = self.G.subgraph(subgraph_nodes)
+        for node in H.nodes:
+            if(H.nodes[node][key] == target):
+                nodes.append(node)
+        return nodes
+        
+
+if __name__ == '__main__':
+    plan = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
+    im = plan.render()
+    im.save('/data/homedata/lch/GPRF/im.png')
+    print(1)
+    
