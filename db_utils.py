@@ -49,7 +49,6 @@ def create_scheme(l_sch):
 def explain_analyze(sql_query, conn):
     cur = conn.cursor()
     try:
-        
         cur.execute(DB_SETTINGS)
         cur.execute(f"""EXPLAIN ANALYZE {sql_query}""")
         rows = cur.fetchall()
@@ -61,7 +60,7 @@ def explain_analyze(sql_query, conn):
     for row in rows:
         print(row[0])
 
-
+# 拆分结果格式为name:[t1,t1] cond: "name.col op pred"
 def _parse_single_query_condition(qc):
     simple_ops = {
         'eq': '=',
@@ -142,8 +141,110 @@ def _parse_single_query_condition(qc):
         'condition': cond
     }
 
+# 做更细致的拆分，拆分形式见plan.py
+def _parse_single_query_condition2(qc):
+    simple_ops = {
+        'eq': '=',
+        'gt': '>',
+        'gte': '>=',
+        'lt': '<',
+        'lte': '<=',
+        'neq': '!='
+    }
+    like_ops = {
+        'not_like': 'NOT LIKE',
+        'like': 'LIKE'
+    }
+    exists_ops = {
+        'missing': 'IS NULL',
+        'exists': 'IS NOT NULL',
+    }
 
-def _get_query_condition(qc):
+    k, v = list(qc.items())[0]
+    cond = {}
+    if k in simple_ops.keys():
+        names = []
+        names.append(v[0].split('.')[0])
+        second_statement = v[1]
+        cond['left_entry_name'] = 
+        if isinstance(second_statement, dict):
+            second_statement = f"'{second_statement['literal']}'"
+            cond['col'] = v[0].split('.')[1]
+            cond['op'] = k
+            cond['pred'] = second_statement['literal']
+        elif isinstance(second_statement, str):
+            names.append(v[1].split('.')[0])
+            if(len(names) == 2):
+                cond['left_entry_name'] = names[0]
+                cond['right_entry_name'] = names[1]
+                cond['left_col_name'] = v[0].split('.')[1]
+                cond['right_col_name'] = v[1].split('.')[1]
+            else :
+                cond['col'] = v[0].split('.')[1]
+                cond['op'] = k
+                cond['pred'] = second_statement
+        elif isinstance(second_statement, (int, float)):
+            second_statement = str(second_statement)
+            cond['col'] = v[0].split('.')[1]
+            cond['op'] = k
+            cond['pred'] = second_statement
+        else:
+            return None
+
+        cond = f"{v[0]} {simple_ops[k]} {second_statement}"
+    elif k == 'in':
+        names = [v[0].split('.')[0]]
+        if isinstance(v[1]['literal'], str):
+            in_part = f"'{v[1]['literal']}'"
+        else:
+            in_part = ', '.join([f"'{state}'" for state in v[1]['literal']])
+        cond = f"{v[0]} in ({in_part})"
+    elif k in like_ops.keys():
+        names = [v[0].split('.')[0]]
+        cond["col"] = v[0].split('.')[1]
+        cond["op"] = k
+        cond["pred"] = v[1]['literal']
+    elif k in exists_ops.keys():
+        v = [v]
+        names = [v[0].split('.')[0]]
+        cond = f"{v[0]} {exists_ops[k]}"
+    elif k in ['or', 'and']:
+        names = []
+        cond = []
+        for _v in v:
+            condition = _parse_single_query_condition(_v)
+            names += condition['names']
+            cond.append(condition['condition'])
+        cond = '(' + f' {k} '.join(cond) + ')'
+        names = list(set(names))
+    elif k == 'between':
+        names = [v[0].split('.')[0]]
+        left, right = v[1], v[2]
+
+        if isinstance(left, dict):
+            left = v[1]['literal']
+        if isinstance(right, dict):
+            right = v[2]['literal']
+
+        if isinstance(left, str):
+            left = f"'{left}'"
+        if isinstance(right, str):
+            right = f"'{right}'"
+
+        cond = f"{v[0]} BETWEEN {left} AND {right}"
+        cond["col"] = v[0].split('.')[1]
+        cond["op"] = k
+        cond["pred"] = f"{left} AND {right}"
+    else:
+        return None
+
+    return {
+        'names': names,
+        'condition': cond
+    }
+
+
+def _get_query_condition(qc,flag):
     conditions = []
 
     def _get_query_condition_internal(qc, conditions):
@@ -152,7 +253,10 @@ def _get_query_condition(qc):
                 _get_query_condition_internal(_qc, conditions)
 
         elif isinstance(qc, dict):
-            single_cond = _parse_single_query_condition(qc)
+            if(flag == 1):
+                single_cond = _parse_single_query_condition(qc)
+            elif(flag == 2):
+                single_cond = _parse_single_query_condition2(qc)
             conditions.append(single_cond)
         else:
             raise Exception(
@@ -171,8 +275,11 @@ def parse_sql_query(sql_query):
     query_tables = [p['value'] for p in parsed['from']]
     reverse_aliases_dict = {p['name']: p['value'] for p in parsed['from']}
     query_conditions = _get_query_condition(
-        parsed['where'].get('and', parsed['where']))
-    return query_tables, reverse_aliases_dict, query_conditions, query_select
+        parsed['where'].get('and', parsed['where']), 1)
+    query_conditions2 = _get_query_condition(
+        parsed['where'].get('and', parsed['where']), 2)
+    
+    return query_tables, reverse_aliases_dict, query_conditions, query_select, query_conditions2
 
 
 def db_rollback(conn):

@@ -4,11 +4,13 @@ import re
 from collections import defaultdict, deque
 from copy import deepcopy
 from db_utils import *
-from main import d
+
 
 import networkx as nx
 import numpy as np
 from PIL import Image
+import torch
+from torch_geometric.data import Data
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -121,6 +123,7 @@ class SinglePlan():
         new_node = len(self.G)
         self.G.add_node(
             new_node,
+            type = "Join",
             tables=self.G.nodes[node1]['tables'] | self.G.nodes[node2]['tables'],
             tab_entries=self.G.nodes[node1]['tab_entries'] | self.G.nodes[node2]['tab_entries'],
             **kwargs
@@ -439,13 +442,16 @@ class GlobalPlan:
             self.G.nodes[node1]["type"] = "Share"
             self.G.nodes[node1]["share_list"].append(len(self.singlePlans)-1)
             pres = list(plan.G.predecessors(node2))
-            # 
+            # 本身即为根节点
             if(len(pres) == 0):
                 self.roots.add(node1)
             else:
+                # 删除-合并-连接
+                succs = list(plan.G.successors(node2))
+                plan.G.remove_nodes_from(succs)
                 self.G = nx.union(self.G, plan.G, rename = ("", "Plan{}-".format(len(self.singlePlans))))
+                self.G.add_edge("Plan{}-".format(len(self.singlePlans))+pres[0], node1)
                 self.roots.add("Plan{}-".format(plan.get_roots[0]))
-                
 
     # 对于子树覆盖相同表的节点可视为Share算子
     def find_shared_op(self, g2):
@@ -463,7 +469,7 @@ class GlobalPlan:
         for node_idx, node_data in g2.nodes.items():
             if(node_data["type"] == "Scan"):
                 nodes = self.lookup_by_value_within_node(node1, "table_entries", node_data["table_entries"][0])
-                self.G.nodes[nodes[0]]["cond"].append(node_data["cond"])
+                self.G.nodes[nodes[0]]["conds"].append(node_data["conds"])
     
     # 在指定node的子树中查找key的value为target的node
     def lookup_by_value_within_node(self, node_index, key, target):
@@ -475,6 +481,30 @@ class GlobalPlan:
             if(H.nodes[node][key] == target):
                 nodes.append(node)
         return nodes
+
+# 将nx图转为pyg图作为gnn的输入
+def convert_nx_to_pyg(G):
+    # 获取所有节点并排序，确保顺序一致
+    nodes = list(G.nodes())
+    node_idx = {node: idx for idx, node in enumerate(nodes)}
+
+    # 生成节点特征（例如，每个节点一个特征值为1）
+    n_nodes = len(nodes)
+    x = torch.ones(n_nodes, 1, dtype=torch.float32)
+    
+    # 处理边信息
+    edges = list(G.edges())
+    sources = [node_idx[e[0]] for e in edges]
+    targets = [node_idx[e[1]] for e in edges]
+
+    edge_index = torch.tensor([sources, targets], dtype=torch.long)
+
+    return Data(x=x, edge_index=edge_index)
+
+# 对节点进行编码,返回torch向量
+# def encode_node(node_data):
+#     torch.
+#     if()
         
 
 if __name__ == '__main__':
