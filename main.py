@@ -75,6 +75,8 @@ if __name__ == '__main__':
     # 模拟实际情况，sql按批到来
     batches = random_batch_splitter(sql_list, d['sys_args']['sql_batch_size'])
     
+    
+    
 
     
     

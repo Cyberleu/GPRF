@@ -166,11 +166,9 @@ def _parse_single_query_condition2(qc):
         names = []
         names.append(v[0].split('.')[0])
         second_statement = v[1]
-        cond['left_entry_name'] = 
         if isinstance(second_statement, dict):
-            second_statement = f"'{second_statement['literal']}'"
             cond['col'] = v[0].split('.')[1]
-            cond['op'] = k
+            cond['op'] = simple_ops[k]
             cond['pred'] = second_statement['literal']
         elif isinstance(second_statement, str):
             names.append(v[1].split('.')[0])
@@ -181,24 +179,25 @@ def _parse_single_query_condition2(qc):
                 cond['right_col_name'] = v[1].split('.')[1]
             else :
                 cond['col'] = v[0].split('.')[1]
-                cond['op'] = k
+                cond['op'] = simple_ops[k]
                 cond['pred'] = second_statement
         elif isinstance(second_statement, (int, float)):
             second_statement = str(second_statement)
             cond['col'] = v[0].split('.')[1]
-            cond['op'] = k
+            cond['op'] = simple_ops[k]
             cond['pred'] = second_statement
         else:
             return None
 
-        cond = f"{v[0]} {simple_ops[k]} {second_statement}"
     elif k == 'in':
         names = [v[0].split('.')[0]]
+        cond['col'] = v[0].split('.')[1]
+        cond['op'] = k
         if isinstance(v[1]['literal'], str):
-            in_part = f"'{v[1]['literal']}'"
+            cond['pred'] = v[1]['literal']
         else:
             in_part = ', '.join([f"'{state}'" for state in v[1]['literal']])
-        cond = f"{v[0]} in ({in_part})"
+            cond['pred'] = f"({in_part})"
     elif k in like_ops.keys():
         names = [v[0].split('.')[0]]
         cond["col"] = v[0].split('.')[1]
@@ -275,11 +274,9 @@ def parse_sql_query(sql_query):
     query_tables = [p['value'] for p in parsed['from']]
     reverse_aliases_dict = {p['name']: p['value'] for p in parsed['from']}
     query_conditions = _get_query_condition(
-        parsed['where'].get('and', parsed['where']), 1)
-    query_conditions2 = _get_query_condition(
         parsed['where'].get('and', parsed['where']), 2)
     
-    return query_tables, reverse_aliases_dict, query_conditions, query_select, query_conditions2
+    return query_tables, reverse_aliases_dict, query_conditions, query_select, 
 
 
 def db_rollback(conn):
@@ -414,7 +411,7 @@ def parse_explain_json_to_list_of_nodes(
         if plan['Node Type'] in join_types:
             tmp_plan = deepcopy(plan)
             del tmp_plan['Plans']
-            tmp_plan["tab_entries"] = set(tabs)
+            tmp_plan["table_entries"] = set(tabs)
             tmp_plan["Node Type"] = join_types[tmp_plan["Node Type"]]
             dict_of_nodes[tabs] = tmp_plan
         return tabs
@@ -473,7 +470,7 @@ def get_cost_plan(p, conn, db, exec_time=False):
     mapping = p.check_isomorphism(plan)
     if mapping is not None:
         for n1, n2 in mapping.items():
-            assert p.G.nodes[n1]["tab_entries"] == plan.G.nodes[n2]["tab_entries"]
+            assert p.G.nodes[n1]["table_entries"] == plan.G.nodes[n2]["table_entries"]
             if n2 in joins_info:
                 join_info = joins_info[n2]
                 info_dict = {

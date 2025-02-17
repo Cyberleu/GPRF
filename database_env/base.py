@@ -4,7 +4,7 @@ import psycopg2
 from gym.spaces import Discrete
 
 from plan import Plan
-from utils.db_utils import get_cost_plan
+from db_utils import get_cost_plan
 import time
 import sys
 sys.setrecursionlimit(10000)

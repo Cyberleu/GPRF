@@ -32,8 +32,15 @@ class SinglePlan():
         self.query_select = query_select
         self.G = nx.DiGraph()
         self.G.add_nodes_from(
-            (i, {'name': alias, 'tables': {tab}, 'tab_entries': {alias}})
+            (i, {'name': alias, 'tables': {tab}, 'table_entries': {alias}, 'type':'Scan'})
             for i, (alias, tab) in enumerate(self.alias_to_table.items()))
+        for node_idx, node_data in self.G.nodes.items():
+            conditions = []
+            for cond in query_join_conditions:
+                if len(cond['names']) == 1 and node_data['name'] in cond['names']:
+                    conditions.append(cond['condition'])
+            self.G.nodes[node_idx].update({'conds':conditions})
+            
         self.roots = set(self.G.nodes)
         self.initial_query = initial_query
         self._joins = []
@@ -125,9 +132,26 @@ class SinglePlan():
             new_node,
             type = "Join",
             tables=self.G.nodes[node1]['tables'] | self.G.nodes[node2]['tables'],
-            tab_entries=self.G.nodes[node1]['tab_entries'] | self.G.nodes[node2]['tab_entries'],
+            table_entries=self.G.nodes[node1]['table_entries'] | self.G.nodes[node2]['table_entries'],
             **kwargs
         )
+        # 确定是通过哪两列进行连接
+        conds = []
+        for cond in self.query_join_conditions:
+            if(len(cond['names']) == 1):
+                continue
+            left_entries = self.G.nodes[node1]['table_entries']
+            right_entries = self.G.nodes[node2]['table_entries']
+            if(cond['names'][0] in left_entries and cond['names'][1] in right_entries):
+                conds.append(cond['condition'])
+            elif(cond['names'][0] in right_entries and cond['names'][1] in left_entries):
+                new_cond = {}
+                new_cond['left_entry_name'] = cond['condition']['right_entry_name']
+                new_cond['right_entry_name'] = cond['condition']['left_entry_name']
+                new_cond['left_col_name'] = cond['condition']['left_col_name']
+                new_cond['right_col_name'] = cond['condition']['right_col_name']
+                conds.append(new_cond)
+        self.G.nodes[new_node].update({'conds':conds})
         self.G.add_edge(new_node, node1, child='left')
         self.G.add_edge(new_node, node2, child='right')
         self._joins.append(
@@ -145,8 +169,8 @@ class SinglePlan():
             self.G.remove_node(node)
 
     def is_inner_join(self, n1, n2):
-        left_tables = self.G.nodes[n1]["tab_entries"]
-        right_tables = self.G.nodes[n2]["tab_entries"]
+        left_tables = self.G.nodes[n1]["table_entries"]
+        right_tables = self.G.nodes[n2]["table_entries"]
         for r1 in left_tables:
             for r2 in right_tables:
                 if frozenset((r1, r2)) in self._query_join_conditions:
@@ -167,7 +191,7 @@ class SinglePlan():
             c = list(self.G[n])
             if len(c) > 0 and not self.is_inner_join(*c):
                 LOG.warning(
-                    f"Query with CROSS JOIN: {c[0]} : {self.G.nodes[c[0]]['tab_entries']}  join  {c[1]} : {self.G.nodes[c[1]]['tab_entries']}")
+                    f"Query with CROSS JOIN: {c[0]} : {self.G.nodes[c[0]]['table_entries']}  join  {c[1]} : {self.G.nodes[c[1]]['table_entries']}")
         return query
 
     # join_collapse_limit, from_collapse_limit, geqo_threshold
@@ -183,8 +207,8 @@ class SinglePlan():
                 l, r = successors
                 l_subquery = _get_leading(l)
                 r_subquery = _get_leading(r)
-                l_tables = self.G.nodes[l]['tab_entries']
-                r_tables = self.G.nodes[r]['tab_entries']
+                l_tables = self.G.nodes[l]['table_entries']
+                r_tables = self.G.nodes[r]['table_entries']
                 return f"({l_subquery} {r_subquery})"
 
             def _get_join_hint(node):
@@ -194,7 +218,7 @@ class SinglePlan():
                     if len(ch) != 0 and 'join_type' in self.G.nodes[n]:
                         join_method = self.G.nodes[n]['join_type'].replace(
                             " ", "").lower()
-                        join_tables = ' '.join(self.G.nodes[n]['tab_entries'])
+                        join_tables = ' '.join(self.G.nodes[n]['table_entries'])
                         hints.append(f"{join_method}({join_tables})")
                 return " ".join(hints)
 
@@ -222,7 +246,7 @@ class SinglePlan():
     def save(self, path):
         m = {n: i for i, n in enumerate(self.G.nodes)}
         g = nx.relabel_nodes(self.G, m)
-        exception_attrs = ['tables', 'tab_entries', 'feature']
+        exception_attrs = ['tables', 'table_entries', 'feature']
         _joins = [(tuple(g[n]), {k: v for k, v in g.nodes[n].items() if k not in exception_attrs})
                   for n in g.nodes() if n >= len(self.query_tables)]
         with open(path, "w") as f:
@@ -332,7 +356,7 @@ def get_all_tables(plan):
         for edge in edges:
             if edge[1] < len(plan.query_tables):
                 tables.append(sorted(plan.G.nodes[edge[1]]['tables'])[0])
-                alias_tables.append(sorted(plan.G.nodes[edge[1]]['tab_entries'])[0])
+                alias_tables.append(sorted(plan.G.nodes[edge[1]]['table_entries'])[0])
             else :
                 _get_all_tables(edge[1])
     _get_all_tables(plan.get_roots()[0])
