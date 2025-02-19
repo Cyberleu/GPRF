@@ -18,6 +18,7 @@ class DataBaseEnv():
         self.col_to_idx = dict()  # idx = obj[rel][col]
         self.N_cols = 0
         self.cols = []
+        self.plan_idx = 0
         for rel in self.scheme:
             self.col_to_idx[rel] = {}
             for col in self.scheme[rel]:
@@ -29,6 +30,7 @@ class DataBaseEnv():
                         for r2 in range(self.N_rels) if r1 != r2]
         self.action_ids = {a: i for i, a in enumerate(self.actions)}
         self.action_space = Discrete(len(self.actions))
+        
 
     def get_obs(self):
         """
@@ -68,6 +70,8 @@ class DataBaseEnv():
         return self.get_obs(), self.reward(), self.is_done, {}
 
     def reset(self, idx=None):
+        self.batch_idx = 0
+        
         if isinstance(idx, str):
             self.query_id = idx
         elif isinstance(idx, int):
@@ -76,6 +80,10 @@ class DataBaseEnv():
             self.query_id = np.random.choice(list(self.db_data.keys()))
         self.plan = SinglePlan(*self.db_data[self.query_id])
         self.current_step = 0
+    
+    def done(self):
+        
+    def get_mask(self):
 
     def render(self):
         return self.plan.render()

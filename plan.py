@@ -3,7 +3,7 @@ import json
 import re
 from collections import defaultdict, deque
 from copy import deepcopy
-from db_utils import *
+# from db_utils import *
 
 
 import networkx as nx

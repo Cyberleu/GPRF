@@ -13,3 +13,4 @@ db_args:
   db: imdb 
 net_args:
 train_args:
+  episodes: 100

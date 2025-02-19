@@ -154,11 +154,22 @@ class QueryEncoder(DataBaseEnv):
     def get_predicates_ohe(self, plan):
         column_preicates_vector = np.zeros(self.N_cols)
         for condition in plan.query_join_conditions:
-            predicates = self._parse_condition(condition['condition'])
-            for alias, col_name in predicates:
-                tab_name = plan.alias_to_table[alias]
-                idx = self.col_to_idx[tab_name][col_name]
+            if len(condition['names']) == 1:
+                tab_name = plan.alias_to_table[condition['names'][0]]
+                idx = self.col_to_idx[tab_name][condition['condition']['col']]
                 column_preicates_vector[idx] = 1
+            else:
+                tab_name1 = plan.alias_to_table[condition['names'][0]]
+                idx = self.col_to_idx[tab_name1][condition['condition']['left_col_name']]
+                column_preicates_vector[idx] = 1
+                tab_name2 = plan.alias_to_table[condition['names'][1]]
+                idx = self.col_to_idx[tab_name2][condition['condition']['right_col_name']]
+                column_preicates_vector[idx] = 1
+            # predicates = self._parse_condition(condition['condition'])
+            # for alias, col_name in predicates:
+            #     tab_name = plan.alias_to_table[alias]
+            #     idx = self.col_to_idx[tab_name][col_name]
+            #     column_preicates_vector[idx] = 1
         return column_preicates_vector
 
 
@@ -240,7 +251,8 @@ if __name__ == '__main__':
     p = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
     with open('/data/homedata/lch/GPRF/data/postgres_env_config.json', "r") as f:
         env_config = json.load(f)
-    pe = PlanEncoder(env_config)
-    encoded_p = pe.encode(p)
+    # pe = PlanEncoder(env_config)
+    # encoded_p = pe.encode(p)
     qe = QueryEncoder(env_config)
     encoded_p = qe.encode(p)
+    print(1)
