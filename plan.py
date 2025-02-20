@@ -3,7 +3,7 @@ import json
 import re
 from collections import defaultdict, deque
 from copy import deepcopy
-# from db_utils import *
+from db_utils import *
 
 
 import networkx as nx
@@ -441,15 +441,14 @@ def generate_sql(plan):
 
 # 一个globalplan由若干个singlePlan组成，singlePlan之间可以用Share算子连接
 # node中包含的属性：1. type(scan, join, share) 2. table_entries, 孩子中包含的所有表，用于Share算子的替换
-# 3. cond , scan算子存储形式为：[{"col":"...", "op":"...", "pred":"..."},{""},..]， join/share算子为[{"left_entry_name":"...", "right_entry_name":"...", "left_col_name":"...", "right_col_name":"..."}]
-# 连接默认为等值连接，因此不需要记录op 4. share_list, 记录此share算子被哪些plan shared
+# 3. conds , scan算子存储形式为：[{"col":"...", "op":"...", "pred":"..."},{""},..]， join/share算子为[{"left_entry_name":"...", "right_entry_name":"...", "left_col_name":"...", "right_col_name":"..."}]
+# 连接默认为等值连接，因此不需要记录op 4. share_list, 记录此share算子被哪些plan shared 5. select_cols, 对于Share算子需要select出其他使用该Share算子的列，形式为set(('alias','col'))
 class GlobalPlan:
     def __init__(self):
         self.G = nx.DiGraph()
         self.roots = [] # 保存每个singlePlan在globalPlan中对应的node id
         self.singlePlans = []
     def merge(self, plan):
-        plan = SinglePlan()
         self.singlePlans.append(plan)
         if(len(self.G) == 0):
             self.G = plan.G
@@ -463,6 +462,7 @@ class GlobalPlan:
         else:
             # 合并table上的谓词，join上的不用管
             self.merge_cond(plan.G, node1, node2)
+            self.merge_select(plan, node1, node2)
             self.G.nodes[node1]["type"] = "Share"
             self.G.nodes[node1]["share_list"].append(len(self.singlePlans)-1)
             pres = list(plan.G.predecessors(node2))
@@ -486,6 +486,25 @@ class GlobalPlan:
                 if(node_data["table_entries"] == other_table_entries and len(other_table_entries) >= d['sys_args']['mv_min_size']):
                     return node, i
         return -1, -1
+    
+    # 对于共享节点，需要select出新加入plan所需的列
+    def merge_select(self, plan, node1, node2):
+        # 原sql中select中的内容要带上
+        for select in plan.query_select:
+            val = list(select['value'].values())[0]
+            alias = val.split('.')[0]
+            col = val.splir('.')[1]
+            self.G.nodes[node1]['select_cols'].add((alias, col))
+        # 和原sql的连接列要选出来
+        pres = list(nx.ancestors(self.G, node2))
+        for node_idx in pres:
+            for cond in plan.G.nodes[node_idx]['conds']:
+                if cond['left_entry_name'] in plan.G.nodes[node2]['table_entries']:
+                    self.G.nodes[node1]['select_cols'].add((cond['left_entry_name'], cond['left_col_name']))
+                elif cond['right_entry_name'] in plan.G.nodes[node2]['table_entries']:
+                    self.G.nodes[node1]['select_cols'].add((cond['right_entry_name'], cond['right_col_name']))
+        
+
         
     # 合并node1和node2子树中scan算子中的所有cond
     def merge_cond(self, g2, node1, node2):
@@ -505,6 +524,35 @@ class GlobalPlan:
             if(H.nodes[node][key] == target):
                 nodes.append(node)
         return nodes
+    
+    # # 获取总的GlobalPlan的cost
+    # def get_cost(self, latency = False):
+        
+    # def get_view_sql(self):
+    #     sqls = []
+    #     for node_idx, node_data in self.G.nodes.items():
+    #         if
+    
+    # 生成以node_idx作为根节点的sql,Share算子生成的是物化视图的sql，root生成的是被物化视图替换后的sql
+    def generate_sql(self, node_idx):
+        
+        sql = ''
+        if self.G.nodes[node_idx]['type'] == 'Share':
+            sql += f'CREATE MATERIALZED VIEW {node_idx} AS '
+            select_stmt = ''
+            for alias, col in list(self.G.nodes[node_idx]['select_cols']):
+                select_stmt += f'{alias}.{col} AS {alias}_{col} ,'
+            select_stmt = select_stmt[:-1]
+            join_stmt = ''
+            succs = list(nx.descendants(self.G, node_idx))
+            succs.append(node_idx)
+            # 按编号由小到大拍即为表的连接顺序
+            succs.sort()
+            for node_idx in succs:
+                node_data = self.G.nodes[node_idx]
+                if node_data['type'] != 'Scan':
+        elif node_idx in self.roots:
+            
 
 # 将nx图转为pyg图作为gnn的输入
 def convert_nx_to_pyg(G):
@@ -525,10 +573,6 @@ def convert_nx_to_pyg(G):
 
     return Data(x=x, edge_index=edge_index)
 
-# 对节点进行编码,返回torch向量
-# def encode_node(node_data):
-#     torch.
-#     if()
         
 
 if __name__ == '__main__':
