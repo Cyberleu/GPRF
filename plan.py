@@ -32,7 +32,7 @@ class SinglePlan():
         self.query_select = query_select
         self.G = nx.DiGraph()
         self.G.add_nodes_from(
-            (i, {'name': alias, 'tables': {tab}, 'table_entries': {alias}, 'type':'Scan'})
+            (i, {'name': alias, 'tables': {tab}, 'table_entries': {alias}, 'type':'Scan' })
             for i, (alias, tab) in enumerate(self.alias_to_table.items()))
         for node_idx, node_data in self.G.nodes.items():
             conditions = []
@@ -133,6 +133,9 @@ class SinglePlan():
             type = "Join",
             tables=self.G.nodes[node1]['tables'] | self.G.nodes[node2]['tables'],
             table_entries=self.G.nodes[node1]['table_entries'] | self.G.nodes[node2]['table_entries'],
+            share_list = [],
+            select_cols = set(),
+            conds_dict = {},
             **kwargs
         )
         # 确定是通过哪两列进行连接
@@ -443,6 +446,7 @@ def generate_sql(plan):
 # node中包含的属性：1. type(scan, join, share) 2. table_entries, 孩子中包含的所有表，用于Share算子的替换
 # 3. conds , scan算子存储形式为：[{"col":"...", "op":"...", "pred":"..."},{""},..]， join/share算子为[{"left_entry_name":"...", "right_entry_name":"...", "left_col_name":"...", "right_col_name":"..."}]
 # 连接默认为等值连接，因此不需要记录op 4. share_list, 记录此share算子被哪些plan shared 5. select_cols, 对于Share算子需要select出其他使用该Share算子的列，形式为set(('alias','col'))
+# 6. conds_dict, 在后续sql构造环节，每个原始查询需要知道在Share节点中涉及到哪些谓词，{plan_idx:conds}
 class GlobalPlan:
     def __init__(self):
         self.G = nx.DiGraph()
@@ -461,7 +465,7 @@ class GlobalPlan:
             self.roots.add("Plan{}-".format(plan.get_roots[0]))
         else:
             # 合并table上的谓词，join上的不用管
-            self.merge_cond(plan.G, node1, node2)
+            self.merge_cond(plan.G, node1, node2, )
             self.merge_select(plan, node1, node2)
             self.G.nodes[node1]["type"] = "Share"
             self.G.nodes[node1]["share_list"].append(len(self.singlePlans)-1)
@@ -503,16 +507,26 @@ class GlobalPlan:
                     self.G.nodes[node1]['select_cols'].add((cond['left_entry_name'], cond['left_col_name']))
                 elif cond['right_entry_name'] in plan.G.nodes[node2]['table_entries']:
                     self.G.nodes[node1]['select_cols'].add((cond['right_entry_name'], cond['right_col_name']))
-        
+        # 所有的谓词要带上
+        succs = list(nx.descendants(self.G, node2))
+        succs.append(node2)
+        for node_idx in succs:
+            if plan.G.nodes[node_idx]['type'] == 'Scan':
+                for cond in plan.G.nodes[node_idx]['conds']:
+                    self.G.nodes[node1]['select_cols'].add((plan.G.nodes[node_idx]['table_entries'][0],cond['col']))
 
         
-    # 合并node1和node2子树中scan算子中的所有cond
-    def merge_cond(self, g2, node1, node2):
-        assert self.G.nodes[node1]["table_entries"] == g2.nodes[node2]["table_entries"]
-        for node_idx, node_data in g2.nodes.items():
+    # 合并node1和node2子树中scan算子中的所有cond,注意需要将不同sql对应的cond区分开来
+    def merge_cond(self, g2, node1, node2, plan_idx):
+        conds = []
+        succs = list(nx.descendants(g2, node2))
+        for node_idx in succs:
+            node_data = g2.nodes[node_idx]
             if(node_data["type"] == "Scan"):
                 nodes = self.lookup_by_value_within_node(node1, "table_entries", node_data["table_entries"][0])
                 self.G.nodes[nodes[0]]["conds"].append(node_data["conds"])
+                conds.append(node_data['conds'])
+        self.G.nodes[node1]['conds_dict'][plan_idx] = conds
     
     # 在指定node的子树中查找key的value为target的node
     def lookup_by_value_within_node(self, node_index, key, target):
@@ -534,26 +548,93 @@ class GlobalPlan:
     #         if
     
     # 生成以node_idx作为根节点的sql,Share算子生成的是物化视图的sql，root生成的是被物化视图替换后的sql
+    # 命名规则：1. 视图名称，VIEW_ + Share节点在GlobalPlan中的名称 2. 视图列，别名为原alias_ + col_name
     def generate_sql(self, node_idx):
         
         sql = ''
         if self.G.nodes[node_idx]['type'] == 'Share':
-            sql += f'CREATE MATERIALZED VIEW {node_idx} AS '
+            sql += f'CREATE MATERIALZED VIEW VIEW_{node_idx} AS '
             select_stmt = ''
             for alias, col in list(self.G.nodes[node_idx]['select_cols']):
                 select_stmt += f'{alias}.{col} AS {alias}_{col} ,'
             select_stmt = select_stmt[:-1]
             join_stmt = ''
+            pred_stmt = ''
             succs = list(nx.descendants(self.G, node_idx))
             succs.append(node_idx)
-            # 按编号由小到大拍即为表的连接顺序
-            succs.sort()
-            for node_idx in succs:
-                node_data = self.G.nodes[node_idx]
-                if node_data['type'] != 'Scan':
+            for succ in succs:
+                node_data = self.G.nodes[succ]
+                for cond in node_data['conds']:
+                    if node_data['type'] != 'Scan':
+                        join_stmt += f'{cond["left_entry_name"]}.{cond["left_col_name"]} = {cond["right_entry_name"]}.{cond["right_col_name"]} AND '
+                    else:
+                        pred_stmt  + f'{node_data["table_entries"][0]}.{cond["col"]} {cond["op"]} {cond["pred"]} AND '
+            where_stmt = pred_stmt + join_stmt
+            where_stmt = where_stmt[:-4]
         elif node_idx in self.roots:
+            # share 算子可能会有包含，采用bfs算法取最外层的share算子
+            succs = list(nx.bfs_successors(self.G, node_idx))
+            # Share算子的root
+            share_root_nodes = []
+            # View中的所有算子（不包含root）
+            share_nodes = []
+            for succ in succs:
+                if self.G[succ]['type'] == 'Share':
+                    # 判断包含关系
+                    pres = list(nx.ancestors(self.G, succ))
+                    contained = False
+                    for pre in pres:
+                        if pre in share_root_nodes:
+                            contained = True
+                            break
+                    if not contained:
+                        share_root_nodes.append(succ)
+            for node in share_root_nodes:
+                share_nodes.extend(list(nx.descendants(self.G, node)))
+            # 将原始列映射到需要被替换成的视图
+            alias2view = {}
+            for node in share_root_nodes:
+                for entry_name in self.G.nodes[node]['table_entries']:
+                    alias2view[entry_name] = node
+            select_stmt = ''
+            plan = self.singlePlans[self.roots.index(node_idx)]
+            for select in plan.query_select:
+                key = list(select['value'].keys())[0]
+                alias, col = select['value'][key].split('.')
+                if alias in alias2view:
+                    col = f'{alias}.{col}'
+                    alias = alias2view[alias]
+                select_stmt += f'{key}({alias}.{col}) AS {select['name']}'
+            join_stmt = ''
+            pred_stmt = ''
+            from_stmt = ''
+            succs = list(nx.descendants(self.G, node_idx))
+            succs.append(node_idx)
+            for node in succs:
+                node_data = self.G.nodes[node]
+                if node in share_root_nodes:
+                    from_stmt += f'VIEW_{node} , '
+                    # 把view中属于本plan的pred加上
+                    for cond in self.G.nodes[node]['conds_dict'][self.roots.index(node_idx)]:
+                        join_stmt += f'{}.{cond} {} {}'
+                elif node in share_nodes:
+                    continue
+                elif node_data['type'] == 'Join':
+                    a1,a2,c1,c2 = node_data['left_entry_name'],node_data['right_entry_name'],node_data['left_col_name'], node_data['right_col_name'] 
+                    if node_data['left_entry_name'] in alias2view:
+                        a1 = 'VIEW' + alias2view[node_data['left_entry_name']]
+                        c1 = f'{node_data['left_entry_name']}_{node_data['left_col_name']}'
+                    if node_data['right_entry_name'] in alias2view:
+                        a2 = 'VIEW_' + alias2view[node_data['right_entry_name']]
+                        c2 = f'{node_data['right_entry_name']}_{node_data['right_col_name']}'
+                    join_stmt += f'{a1}.{c1} = {a2}.{c2} AND '
+                elif node_data['type'] == 'Scan':
+                    from_stmt += f'{node_data['table_entries'][0]} , '
+                    for cond in node_data['conds']:
+                        pred_stmt += f'{node_data['table_entries'][0]}.{node_data['col']} {node_data['op']} {node_data['pred']} AND '
             
-
+            where_stmt = pred_stmt + join_stmt
+            where_stmt = where_stmt[:-4]
 # 将nx图转为pyg图作为gnn的输入
 def convert_nx_to_pyg(G):
     # 获取所有节点并排序，确保顺序一致
