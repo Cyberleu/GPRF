@@ -22,7 +22,7 @@ class DataBaseWithSelectQueryStoreEnv(gym.Env):
 
     def __init__(self, psycopg_connect_url, db, return_latency=False, max_connect_retry=30000):
         # self.conn = psycopg2.connect(psycopg_connect_url)
-        self.conn = psycopg2.connect(host="localhost",user = "cyberleu",password = "cyberleu",database = "imdb")
+        self.conn = psycopg2.connect(host="localhost",user = "postgres",password = "postgres",database = "imdb")
         self.psycopg_connect_url = psycopg_connect_url
         self.db = db
         self.return_latency = return_latency

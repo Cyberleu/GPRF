@@ -286,7 +286,7 @@ def db_rollback(conn):
     curs.close()
 
 
-def get_cost_from_db(sql_query, conn, exec_time=False):
+def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False):
     """
     DEPRECATED
     sql_query: str
@@ -313,7 +313,7 @@ def get_cost_from_db(sql_query, conn, exec_time=False):
         raise e
     cur.close()
 
-    if exec_time:
+    if exec_time and not is_view:
         return rows[0][0][0]['Plan']['Actual Total Time']
     else:
         return rows[0][0][0]['Plan']['Total Cost']

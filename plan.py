@@ -525,7 +525,9 @@ class GlobalPlan:
             if(node_data["type"] == "Scan"):
                 nodes = self.lookup_by_value_within_node(node1, "table_entries", node_data["table_entries"][0])
                 self.G.nodes[nodes[0]]["conds"].append(node_data["conds"])
-                conds.append(node_data['conds'])
+                for cond in node_data:
+                    cond['entry_name'] = node_data['table_entries'][0]
+                    conds.append(cond)
         self.G.nodes[node1]['conds_dict'][plan_idx] = conds
     
     # 在指定node的子树中查找key的value为target的node
@@ -538,37 +540,37 @@ class GlobalPlan:
             if(H.nodes[node][key] == target):
                 nodes.append(node)
         return nodes
-    
-    # # 获取总的GlobalPlan的cost
-    # def get_cost(self, latency = False):
-        
-    # def get_view_sql(self):
-    #     sqls = []
-    #     for node_idx, node_data in self.G.nodes.items():
-    #         if
+
     
     # 生成以node_idx作为根节点的sql,Share算子生成的是物化视图的sql，root生成的是被物化视图替换后的sql
     # 命名规则：1. 视图名称，VIEW_ + Share节点在GlobalPlan中的名称 2. 视图列，别名为原alias_ + col_name
-    def generate_sql(self, node_idx):
-        
+    def generate_sql(self, node_idx, is_view, Leading = True):
+        if is_view:
+            assert self.G.nodes[node_idx]['type'] == 'Share'
+        else:
+            assert node_idx in self.roots
         sql = ''
-        if self.G.nodes[node_idx]['type'] == 'Share':
+        if is_view:
             sql += f'CREATE MATERIALZED VIEW VIEW_{node_idx} AS '
             select_stmt = ''
             for alias, col in list(self.G.nodes[node_idx]['select_cols']):
-                select_stmt += f'{alias}.{col} AS {alias}_{col} ,'
-            select_stmt = select_stmt[:-1]
+                select_stmt += f'{alias}.{col} AS {alias}_{col} , '
+            select_stmt = select_stmt[:-2]
+            from_stmt = ''
             join_stmt = ''
             pred_stmt = ''
             succs = list(nx.descendants(self.G, node_idx))
             succs.append(node_idx)
             for succ in succs:
                 node_data = self.G.nodes[succ]
-                for cond in node_data['conds']:
-                    if node_data['type'] != 'Scan':
+                if node_data['type'] != 'Scan':
+                    for cond in node_data['conds']:
                         join_stmt += f'{cond["left_entry_name"]}.{cond["left_col_name"]} = {cond["right_entry_name"]}.{cond["right_col_name"]} AND '
-                    else:
+                else:
+                    for cond in node_data['conds']:
+                        from_stmt += f'{node_data['tables'][0]} AS {node_data['table_entries'][0]} , '
                         pred_stmt  + f'{node_data["table_entries"][0]}.{cond["col"]} {cond["op"]} {cond["pred"]} AND '
+            from_stmt = from_stmt[:-2]
             where_stmt = pred_stmt + join_stmt
             where_stmt = where_stmt[:-4]
         elif node_idx in self.roots:
@@ -616,7 +618,7 @@ class GlobalPlan:
                     from_stmt += f'VIEW_{node} , '
                     # 把view中属于本plan的pred加上
                     for cond in self.G.nodes[node]['conds_dict'][self.roots.index(node_idx)]:
-                        join_stmt += f'{}.{cond} {} {}'
+                        pred_stmt += f'{cond['entry_name']}.{cond['col']} {cond['op']} {cond['pred']} AND'
                 elif node in share_nodes:
                     continue
                 elif node_data['type'] == 'Join':
@@ -632,9 +634,55 @@ class GlobalPlan:
                     from_stmt += f'{node_data['table_entries'][0]} , '
                     for cond in node_data['conds']:
                         pred_stmt += f'{node_data['table_entries'][0]}.{node_data['col']} {node_data['op']} {node_data['pred']} AND '
-            
+            from_stmt = from_stmt[:-2]
             where_stmt = pred_stmt + join_stmt
             where_stmt = where_stmt[:-4]
+        sql = select_stmt + from_stmt + where_stmt
+        def _get_leading(node):
+                succs = self.G.successors(node)
+                if len(succs) == 0:
+                    alias = self.G.nodes[node]['name']
+                    return f"{alias}"
+                l, r = succs
+                l_subquery = _get_leading(l)
+                r_subquery = _get_leading(r)
+                return f"({l_subquery} {r_subquery})"
+        if Leading == True:
+            sql = f"/*+ Leading({_get_leading(node_idx)}) */" + sql
+        return sql
+    
+    def _sql_query_with_hints(self):
+        if self.initial_query:
+            def _get_leading(node):
+                successors = self.G[node]
+                if len(successors) == 0:
+                    alias = self.G.nodes[node]['name']
+                    return f"{alias}"
+                l, r = successors
+                l_subquery = _get_leading(l)
+                r_subquery = _get_leading(r)
+                l_tables = self.G.nodes[l]['table_entries']
+                r_tables = self.G.nodes[r]['table_entries']
+                return f"({l_subquery} {r_subquery})"
+
+            def _get_join_hint(node):
+                hints = []
+                for n in self.G:
+                    ch = self.G[n]
+                    if len(ch) != 0 and 'join_type' in self.G.nodes[n]:
+                        join_method = self.G.nodes[n]['join_type'].replace(
+                            " ", "").lower()
+                        join_tables = ' '.join(self.G.nodes[n]['table_entries'])
+                        hints.append(f"{join_method}({join_tables})")
+                return " ".join(hints)
+
+            node = next(iter(self.roots))
+            leading = f"leading({_get_leading(node)})"
+            join_type_hint = _get_join_hint(node)
+            r = re.split(r'SELECT|FROM', self.initial_query)
+            return f"SELECT /*+ {join_type_hint} {leading} */ {r[1]} FROM {r[-1]}"
+        
+
 # 将nx图转为pyg图作为gnn的输入
 def convert_nx_to_pyg(G):
     # 获取所有节点并排序，确保顺序一致
@@ -657,6 +705,7 @@ def convert_nx_to_pyg(G):
         
 
 if __name__ == '__main__':
+    get_cost_plan
     plan = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
     im = plan.render()
     im.save('/data/homedata/lch/GPRF/im.png')

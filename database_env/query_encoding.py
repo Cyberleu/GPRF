@@ -32,7 +32,7 @@ class DataBaseEnv_QueryEncoding(DataBaseEnv):
 
     def compute_cardinalities(env_config):
         # conn = psycopg2.connect(env_config["psycopg_connect_url"])
-        conn = psycopg2.connect(host="localhost",user = "cyberleu",password = "cyberleu",database = "imdb")
+        conn = psycopg2.connect(host="localhost",user = "postgres",password = "postgres",database = "imdb")
         cursor = conn.cursor()
         env_config["cardinalities"] = {}
         for q, info in env_config["db_data"].items():
@@ -60,7 +60,7 @@ class DataBaseEnv_QueryEncoding(DataBaseEnv):
 
     def compute_condition_selectivities(env_config):
         # conn = psycopg2.connect(env_config["psycopg_connect_url"])
-        conn = psycopg2.connect(host="localhost",user = "cyberleu",password = "cyberleu",database = "imdb")
+        conn = psycopg2.connect(host="localhost",user = "postgres",password = "postgres",database = "imdb")
         cursor = conn.cursor()
         env_config["condition_selectivity"] = {}
         for q, info in env_config["db_data"].items():

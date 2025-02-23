@@ -3,7 +3,7 @@ import numpy as np
 import psycopg2
 from gym.spaces import Discrete
 import torch
-
+from db_utils import *
 from plan import SinglePlan
 from plan import GlobalPlan
 import time
@@ -11,6 +11,7 @@ import sys
 sys.setrecursionlimit(10000)
 class Env():
     def __init__(self, env_config):
+        self.conn = psycopg2.connect(host="localhost",user = "postgres",password = "postgres",database = "imdb")
         self.scheme = env_config['scheme']
         self.db_data = env_config['db_data']
         self.rel_to_idx = {rel: i for i, rel in enumerate(
@@ -36,6 +37,10 @@ class Env():
         self.plan_idx = 0
         self.plan = self.plans[self.plan_idx]
         self.global_plan = GlobalPlan()
+        # 记录每个query的cost
+        self.query_costs = {}
+        self.view_costs = {}
+        
 
     def get_obs(self):
         """
@@ -76,6 +81,7 @@ class Env():
 
     def reset(self, idxs=None):
         self.plans.clear()
+        self.query_costs.clear()
         for idx in idxs:
             self.plans.append(SinglePlan(*self.db_data[self.query_id]))
         self.plan_idx = 0
@@ -98,6 +104,34 @@ class Env():
         m[list(zip(*find_inner_join_actions(self.plan)))] = 1
         return m
     
+    # 通过增量的方式获取GlobalPlan的cost,判断新加的plan是否能共享
+    def get_cost(self, exec_time = False):
+        root = self.global_plan.roots[-1]
+        shared_nodes = self.global_plan.lookup_by_value_within_node(root, 'type', 'Share')
+        if(len(shared_nodes) == 0):
+            # 无法进行共享， 则直接加上该sql的cost
+            query_sql = self.global_plan.generate_sql(root)
+            query_cost = get_cost_from_db(query_sql, self.conn, exec_time)
+            self.query_costs[root] = query_cost
+        else:
+            # 可以进行共享，考虑1. 视图已经存在，无需再生成 2. 视图不存在
+            # 当生成视图时可能会对前面已经生成的query有影响，因此要重新获取cost
+            influcned_roots = set()
+            for node in shared_nodes:
+                share_list = self.global_plan.G.nodes[node]['share_list']
+                assert len(share_list) >= 2
+                if len(share_list) == 2:
+                    view_sql = self.global_plan.generate_sql(node, True)
+                    view_cost = get_cost_from_db(view_sql, self.conn, is_view = True, exec_time=True)
+                    self.view_costs[node] = view_cost
+                    influcned_roots.add(share_list[0])
+            influcned_roots.add(root)
+            for node in list(influcned_roots):
+                query_sql = self.global_plan.generate_sql(node, False)
+                query_cost = get_cost_from_db(query_sql, self.conn, exec_time = exec_time)
+                self.query_costs[query_sql] = query_cost
+        return sum(list(self.view_costs.values())) + sum(list(self.query_costs.values()))
+        
     def reward(self):
         if not self.is_done():
             return -0.05
