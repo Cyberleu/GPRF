@@ -151,8 +151,8 @@ class SinglePlan():
                 new_cond = {}
                 new_cond['left_entry_name'] = cond['condition']['right_entry_name']
                 new_cond['right_entry_name'] = cond['condition']['left_entry_name']
-                new_cond['left_col_name'] = cond['condition']['left_col_name']
-                new_cond['right_col_name'] = cond['condition']['right_col_name']
+                new_cond['left_col_name'] = cond['condition']['right_col_name']
+                new_cond['right_col_name'] = cond['condition']['left_col_name']
                 conds.append(new_cond)
         self.G.nodes[new_node].update({'conds':conds})
         self.G.add_edge(new_node, node1, child='left')
@@ -454,18 +454,19 @@ class GlobalPlan:
         self.singlePlans = []
     def merge(self, plan):
         self.singlePlans.append(plan)
+        plan_idx = len(self.singlePlans)-1
         if(len(self.G) == 0):
-            self.G = plan.G
+            self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
+            self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
             return
-        self.G = nx.union(self.G, plan.G, rename = ("Global", "Single"))
-        node1, node2 = self.find_shared_op()
+        node1, node2 = self.find_shared_op(plan.G)
         if(node1 == -1):
             # 无法Share，直接加入G, 新加入的plan以‘Plan(index)-’区分
-            self.G = nx.union(self.G, plan.G, rename = ("", "Plan{}-".format(len(self.singlePlans))))
-            self.roots.add("Plan{}-".format(plan.get_roots[0]))
+            self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
+            self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
         else:
             # 合并table上的谓词，join上的不用管
-            self.merge_cond(plan.G, node1, node2, )
+            self.merge_cond(plan.G, node1, node2, plan_idx)
             self.merge_select(plan, node1, node2)
             self.G.nodes[node1]["type"] = "Share"
             self.G.nodes[node1]["share_list"].append(len(self.singlePlans)-1)
@@ -477,9 +478,9 @@ class GlobalPlan:
                 # 删除-合并-连接
                 succs = list(plan.G.successors(node2))
                 plan.G.remove_nodes_from(succs)
-                self.G = nx.union(self.G, plan.G, rename = ("", "Plan{}-".format(len(self.singlePlans))))
-                self.G.add_edge("Plan{}-".format(len(self.singlePlans))+pres[0], node1)
-                self.roots.add("Plan{}-".format(plan.get_roots[0]))
+                self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
+                self.G.add_edge(f'{plan_idx}_{pres[0]}', node1)
+                self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
 
     # 对于子树覆盖相同表的节点可视为Share算子
     def find_shared_op(self, g2):
@@ -497,10 +498,10 @@ class GlobalPlan:
         for select in plan.query_select:
             val = list(select['value'].values())[0]
             alias = val.split('.')[0]
-            col = val.splir('.')[1]
+            col = val.split('.')[1]
             self.G.nodes[node1]['select_cols'].add((alias, col))
         # 和原sql的连接列要选出来
-        pres = list(nx.ancestors(self.G, node2))
+        pres = list(nx.ancestors(plan.G, node2))
         for node_idx in pres:
             for cond in plan.G.nodes[node_idx]['conds']:
                 if cond['left_entry_name'] in plan.G.nodes[node2]['table_entries']:
@@ -508,27 +509,35 @@ class GlobalPlan:
                 elif cond['right_entry_name'] in plan.G.nodes[node2]['table_entries']:
                     self.G.nodes[node1]['select_cols'].add((cond['right_entry_name'], cond['right_col_name']))
         # 所有的谓词要带上
-        succs = list(nx.descendants(self.G, node2))
+        succs = list(nx.descendants(plan.G, node2))
         succs.append(node2)
         for node_idx in succs:
             if plan.G.nodes[node_idx]['type'] == 'Scan':
                 for cond in plan.G.nodes[node_idx]['conds']:
-                    self.G.nodes[node1]['select_cols'].add((plan.G.nodes[node_idx]['table_entries'][0],cond['col']))
+                    self.G.nodes[node1]['select_cols'].add((list(plan.G.nodes[node_idx]['table_entries'])[0],cond['col']))
 
         
     # 合并node1和node2子树中scan算子中的所有cond,注意需要将不同sql对应的cond区分开来
-    def merge_cond(self, g2, node1, node2, plan_idx):
+    def merge_cond(self, g2, node1, node2, plan_idx2):
+        plan_idx1, plan_idx2 = get_plan_idx(node1), plan_idx2
         conds = []
         succs = list(nx.descendants(g2, node2))
         for node_idx in succs:
             node_data = g2.nodes[node_idx]
-            if(node_data["type"] == "Scan"):
-                nodes = self.lookup_by_value_within_node(node1, "table_entries", node_data["table_entries"][0])
-                self.G.nodes[nodes[0]]["conds"].append(node_data["conds"])
-                for cond in node_data:
-                    cond['entry_name'] = node_data['table_entries'][0]
-                    conds.append(cond)
-        self.G.nodes[node1]['conds_dict'][plan_idx] = conds
+            if(node_data["type"] == "Scan" and len(node_data['conds']) > 0):
+                nodes = self.lookup_by_value_within_node(node1, "table_entries", node_data["table_entries"])
+                self.G.nodes[nodes[0]]["conds"].extend(node_data["conds"])
+                conds.extend(node_data['conds'])
+        self.G.nodes[node1]['conds_dict'][plan_idx2] = conds
+        # 如果是首次合并，则原来的pred也要加进conds_dict
+        if self.G.nodes[node1]['type'] != 'Share':
+            conds = []
+            succs = list(nx.descendants(self.G, node1))
+            for node_idx in succs:
+                node_data = self.G.nodes[node_idx]
+                if(node_data["type"] == "Scan" and len(node_data['conds']) > 0):
+                    conds.extend(node_data['conds'])
+            self.G.nodes[node1]['conds_dict'][plan_idx1] = conds
     
     # 在指定node的子树中查找key的value为target的node
     def lookup_by_value_within_node(self, node_index, key, target):
@@ -551,7 +560,7 @@ class GlobalPlan:
             assert node_idx in self.roots
         sql = ''
         if is_view:
-            sql += f'CREATE MATERIALZED VIEW VIEW_{node_idx} AS '
+            sql += f'CREATE MATERIALIZED VIEW VIEW_{node_idx} AS '
             select_stmt = ''
             for alias, col in list(self.G.nodes[node_idx]['select_cols']):
                 select_stmt += f'{alias}.{col} AS {alias}_{col} , '
@@ -567,21 +576,21 @@ class GlobalPlan:
                     for cond in node_data['conds']:
                         join_stmt += f'{cond["left_entry_name"]}.{cond["left_col_name"]} = {cond["right_entry_name"]}.{cond["right_col_name"]} AND '
                 else:
+                    from_stmt += f'{list(node_data["tables"])[0]} AS {list(node_data["table_entries"])[0]} , '
                     for cond in node_data['conds']:
-                        from_stmt += f'{node_data['tables'][0]} AS {node_data['table_entries'][0]} , '
-                        pred_stmt  + f'{node_data["table_entries"][0]}.{cond["col"]} {cond["op"]} {cond["pred"]} AND '
+                        pred_stmt += f'{list(node_data["table_entries"])[0]}.{cond["col"]} {cond["op"]} {cond["pred"]} AND '
             from_stmt = from_stmt[:-2]
             where_stmt = pred_stmt + join_stmt
             where_stmt = where_stmt[:-4]
         elif node_idx in self.roots:
             # share 算子可能会有包含，采用bfs算法取最外层的share算子
-            succs = list(nx.bfs_successors(self.G, node_idx))
+            succs = list(nx.bfs_tree(self.G, source=node_idx).nodes())
             # Share算子的root
             share_root_nodes = []
             # View中的所有算子（不包含root）
             share_nodes = []
             for succ in succs:
-                if self.G[succ]['type'] == 'Share':
+                if self.G.nodes[succ]['type'] == 'Share':
                     # 判断包含关系
                     pres = list(nx.ancestors(self.G, succ))
                     contained = False
@@ -604,9 +613,9 @@ class GlobalPlan:
                 key = list(select['value'].keys())[0]
                 alias, col = select['value'][key].split('.')
                 if alias in alias2view:
-                    col = f'{alias}.{col}'
-                    alias = alias2view[alias]
-                select_stmt += f'{key}({alias}.{col}) AS {select['name']}'
+                    col = f'{alias}_{col}'
+                    alias = 'VIEW_' + alias2view[alias]
+                select_stmt += f'{key}({alias}.{col}) AS {select["name"]} , '
             join_stmt = ''
             pred_stmt = ''
             from_stmt = ''
@@ -618,28 +627,31 @@ class GlobalPlan:
                     from_stmt += f'VIEW_{node} , '
                     # 把view中属于本plan的pred加上
                     for cond in self.G.nodes[node]['conds_dict'][self.roots.index(node_idx)]:
-                        pred_stmt += f'{cond['entry_name']}.{cond['col']} {cond['op']} {cond['pred']} AND'
+                        pred_stmt += f'VIEW_{node}.{cond["entry_name"]}_{cond["col"]} {cond["op"]} {cond["pred"]} AND '
                 elif node in share_nodes:
                     continue
                 elif node_data['type'] == 'Join':
-                    a1,a2,c1,c2 = node_data['left_entry_name'],node_data['right_entry_name'],node_data['left_col_name'], node_data['right_col_name'] 
-                    if node_data['left_entry_name'] in alias2view:
-                        a1 = 'VIEW' + alias2view[node_data['left_entry_name']]
-                        c1 = f'{node_data['left_entry_name']}_{node_data['left_col_name']}'
-                    if node_data['right_entry_name'] in alias2view:
-                        a2 = 'VIEW_' + alias2view[node_data['right_entry_name']]
-                        c2 = f'{node_data['right_entry_name']}_{node_data['right_col_name']}'
+                    a1,a2,c1,c2 = node_data['conds'][0]['left_entry_name'],node_data['conds'][0]['right_entry_name'],node_data['conds'][0]['left_col_name'], node_data['conds'][0]['right_col_name'] 
+                    if a1 in alias2view:
+                        c1 = f'{a1}_{c1}'
+                        a1 = 'VIEW' + alias2view[a1]
+                    if a2 in alias2view:
+                        c2 = f'{a2}_{c2}'
+                        a2 = 'VIEW_' + alias2view[a2]
                     join_stmt += f'{a1}.{c1} = {a2}.{c2} AND '
                 elif node_data['type'] == 'Scan':
-                    from_stmt += f'{node_data['table_entries'][0]} , '
+                    from_stmt += f'{list(node_data["tables"])[0]} AS {list(node_data["table_entries"])[0]} , '
                     for cond in node_data['conds']:
-                        pred_stmt += f'{node_data['table_entries'][0]}.{node_data['col']} {node_data['op']} {node_data['pred']} AND '
+                        pred_stmt += f'{cond["entry_name"]}.{cond["col"]} {cond["op"]} {cond["pred"]} AND '
+            select_stmt = select_stmt[:-2]
             from_stmt = from_stmt[:-2]
             where_stmt = pred_stmt + join_stmt
             where_stmt = where_stmt[:-4]
-        sql = select_stmt + from_stmt + where_stmt
+        sql += ' SELECT ' + select_stmt + ' FROM ' + from_stmt + ' WHERE ' + where_stmt + ';'
         def _get_leading(node):
-                succs = self.G.successors(node)
+                succs = list(self.G.successors(node))
+                if self.G.nodes[node]['type'] == 'Share':
+                    return f"VIEW_{node}"
                 if len(succs) == 0:
                     alias = self.G.nodes[node]['name']
                     return f"{alias}"
@@ -651,37 +663,10 @@ class GlobalPlan:
             sql = f"/*+ Leading({_get_leading(node_idx)}) */" + sql
         return sql
     
-    def _sql_query_with_hints(self):
-        if self.initial_query:
-            def _get_leading(node):
-                successors = self.G[node]
-                if len(successors) == 0:
-                    alias = self.G.nodes[node]['name']
-                    return f"{alias}"
-                l, r = successors
-                l_subquery = _get_leading(l)
-                r_subquery = _get_leading(r)
-                l_tables = self.G.nodes[l]['table_entries']
-                r_tables = self.G.nodes[r]['table_entries']
-                return f"({l_subquery} {r_subquery})"
-
-            def _get_join_hint(node):
-                hints = []
-                for n in self.G:
-                    ch = self.G[n]
-                    if len(ch) != 0 and 'join_type' in self.G.nodes[n]:
-                        join_method = self.G.nodes[n]['join_type'].replace(
-                            " ", "").lower()
-                        join_tables = ' '.join(self.G.nodes[n]['table_entries'])
-                        hints.append(f"{join_method}({join_tables})")
-                return " ".join(hints)
-
-            node = next(iter(self.roots))
-            leading = f"leading({_get_leading(node)})"
-            join_type_hint = _get_join_hint(node)
-            r = re.split(r'SELECT|FROM', self.initial_query)
-            return f"SELECT /*+ {join_type_hint} {leading} */ {r[1]} FROM {r[-1]}"
-        
+def get_plan_idx(node):
+    parts = node.split('_')
+    plan_idx = parts[0]  
+    return int(plan_idx)
 
 # 将nx图转为pyg图作为gnn的输入
 def convert_nx_to_pyg(G):
@@ -705,9 +690,20 @@ def convert_nx_to_pyg(G):
         
 
 if __name__ == '__main__':
-    get_cost_plan
-    plan = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
-    im = plan.render()
-    im.save('/data/homedata/lch/GPRF/im.png')
-    print(1)
+    plan1 = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
+    plan2 = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/2.sql")
+    # im = plan1.render()
+    # im.save('/data/homedata/lch/GPRF/im1.png')
+    # im = plan2.render()
+    # im.save('/data/homedata/lch/GPRF/im2.png')
+    gp = GlobalPlan()
+    gp.merge(plan1)
+    gp.merge(plan2)
+    print(gp.roots)
+    shared_node = ''
+    for node in gp.G.nodes:
+        if gp.G.nodes[node]['type'] == 'Share':
+           shared_node = node
+    print(gp.generate_sql(shared_node, True)) 
+    print(gp.generate_sql(gp.roots[0], False))
     

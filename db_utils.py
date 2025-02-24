@@ -167,6 +167,7 @@ def _parse_single_query_condition2(qc):
         names.append(v[0].split('.')[0])
         second_statement = v[1]
         if isinstance(second_statement, dict):
+            cond['entry_name'] = v[0].split('.')[0]
             cond['col'] = v[0].split('.')[1]
             cond['op'] = simple_ops[k]
             cond['pred'] = second_statement['literal']
@@ -178,11 +179,13 @@ def _parse_single_query_condition2(qc):
                 cond['left_col_name'] = v[0].split('.')[1]
                 cond['right_col_name'] = v[1].split('.')[1]
             else :
+                cond['entry_name'] = v[0].split('.')[0]
                 cond['col'] = v[0].split('.')[1]
                 cond['op'] = simple_ops[k]
                 cond['pred'] = second_statement
         elif isinstance(second_statement, (int, float)):
             second_statement = str(second_statement)
+            cond['entry_name'] = v[0].split('.')[0]
             cond['col'] = v[0].split('.')[1]
             cond['op'] = simple_ops[k]
             cond['pred'] = second_statement
@@ -191,6 +194,7 @@ def _parse_single_query_condition2(qc):
 
     elif k == 'in':
         names = [v[0].split('.')[0]]
+        cond['entry_name'] = v[0].split('.')[0]
         cond['col'] = v[0].split('.')[1]
         cond['op'] = k
         if isinstance(v[1]['literal'], str):
@@ -200,9 +204,10 @@ def _parse_single_query_condition2(qc):
             cond['pred'] = f"({in_part})"
     elif k in like_ops.keys():
         names = [v[0].split('.')[0]]
+        cond['entry_name'] = v[0].split('.')[0]
         cond["col"] = v[0].split('.')[1]
         cond["op"] = k
-        cond["pred"] = v[1]['literal']
+        cond["pred"] = f'\'{v[1]["literal"]}\''
     elif k in exists_ops.keys():
         v = [v]
         names = [v[0].split('.')[0]]
@@ -231,6 +236,7 @@ def _parse_single_query_condition2(qc):
             right = f"'{right}'"
 
         cond = f"{v[0]} BETWEEN {left} AND {right}"
+        cond['entry_name'] = v[0].split('.')[0]
         cond["col"] = v[0].split('.')[1]
         cond["op"] = k
         cond["pred"] = f"{left} AND {right}"
