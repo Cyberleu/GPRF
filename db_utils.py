@@ -8,6 +8,7 @@ import glob
 import psycopg2
 from moz_sql_parser import parse
 import os
+import config
 
 from plan import SinglePlan
 
@@ -20,13 +21,11 @@ DB_SETTINGS = """BEGIN;
                 """
 
 LOG = logging.getLogger(__name__)
-config_path = "config.yml"
-with open(config_path, 'r') as file:
-        d = yaml.load(file, Loader=yaml.FullLoader)
+
 
 # get original plan from pg 
 def build_and_save_optimizer_plan(sql_path):
-    conn = psycopg2.connect(host=d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
+    conn = config.conn
     with open(sql_path, 'r') as file:
         q = file.read()
     query_tables, reverse_aliases_dict, query_conditions, parsed_select = parse_sql_query(q)
@@ -298,7 +297,7 @@ def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False):
     sql_query: str
         valid sql query
     conn: psycopg2.extensions.connection
-        example: conn = psycopg2.connect(
+        example: conn = config.conn(
             "postgres://imdb:pwdpwd@127.0.0.1:5432/imdb")
 
     Returns

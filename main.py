@@ -1,14 +1,15 @@
-
+from gprf import GPRF
 from db_utils import *
 import yaml
 import glob
 import json
 import random
+import config
 
 
 SEED = 1234
 INIT = True
-config_path = "config.yml"
+
 
 def read_json_file(file_path):
     try:
@@ -53,28 +54,27 @@ if __name__ == '__main__':
     # 读取训练文件
     sql_list = []
     sql_informs = {}
-    with open(config_path, 'r') as file:
-        d = yaml.load(file, Loader=yaml.FullLoader)
-        job_train_path = d['sys_args']['job_train_path']
-        x_train = glob.glob(job_train_path + "[0-9]*.sql")
-        for each in x_train:
-            with open(each, 'r') as file:
-                q = file.read()
-                sql_list.append(q)
+    job_train_path = config.d['sys_args']['job_train_path']
+    x_train = glob.glob(job_train_path + "[0-9]*.sql")
+    for each in x_train:
+        with open(each, 'r') as file:
+            q = file.read()
+            sql_list.append(q)
     if(INIT):
-        conn = psycopg2.connect(host=d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
+        conn = config.conn
         # 获取原始sql的基准信息
         for sql in sql_list:
             query_tables, reverse_aliases_dict, query_conditions, query_select = parse_sql_query(q)
-            time = get_cost_from_db(q, conn, True)
+            time = get_cost_from_db(q, conn, False)
             sql_informs[q] = time
-        with open(d['sys_args']['baseline_path'], 'w') as file:
+        with open(config.d['sys_args']['baseline_path'], 'w') as file:
             json.dump(sql_informs, file, indent=4)
     # 读取相关文件
-    baseline = read_json_file(d['sys_args']['baseline_path'])
+    baseline = read_json_file(config.d['sys_args']['baseline_path'])
     # 模拟实际情况，sql按批到来
-    batches = random_batch_splitter(sql_list, d['sys_args']['sql_batch_size'])
-    
+    batches = random_batch_splitter(sql_list, config.d['sys_args']['sql_batch_size'])
+    alg = GPRF(baseline, batches)
+    alg.run()
     
     
 

@@ -32,7 +32,7 @@ if __name__ == '__main__':
     job_train_path = d['db_args']['job_train_path']
     # x_train = glob.glob(job_train_path + "27c.sql")
     x_train,x_test = train_test_split(glob.glob(job_train_path + "[0-9]*.sql"),train_size=0.99)
-    conn = psycopg2.connect(host=d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
+    conn = config.conn
     original_sqls = []
     for sql_path in x_train:
         with open(sql_path, 'r') as file:
@@ -119,7 +119,7 @@ if __name__ == '__main__':
         query_sqls.append(sql)
     end = time.time()
     print(f"训练时间：{end-start}")
-    conn = psycopg2.connect(host=d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
+    conn = config.conn
     
     start = time.time()
     for sql in original_sqls:

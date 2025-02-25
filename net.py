@@ -4,10 +4,11 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, global_mean_pool, TopKPooling
 from torch_geometric.data import Batch
 
-class Net():
-    def __init__(self, config):
-        self.gp_gnn = GCNConv()
-        self.sp_gnn = GCNConv()
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gp_gnn = ConvGNN()
+        self.sp_gnn = ConvGNN()
     
     def forward(self, input):
         # 分别为全局plan，当前plan，query
@@ -78,19 +79,6 @@ class ConvGNN(nn.Module):
         x = self.lin(x)
         return F.log_softmax(x, dim=1)
 
-# 使用示例
-model = ConvGNN(in_channels=64,    # 输入特征维度
-               hidden_channels=128, # 隐藏层维度
-               out_channels=10,     # 输出类别数
-               num_layers=4)        # 总层数
-
-# 假设输入数据
-x = torch.randn(100, 64)          # 100个节点，每个节点64维特征
-edge_index = torch.randint(0, 100, (2, 200))  # 随机边
-batch = torch.cat([torch.zeros(100)]).long()  # 两个图的batch
-
-output = model(x, edge_index, batch)
-print(output)  # torch.Size([2, 10])
 
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dim):

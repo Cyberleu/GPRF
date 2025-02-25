@@ -3,7 +3,8 @@ import json
 import re
 from collections import defaultdict, deque
 from copy import deepcopy
-from db_utils import *
+import config
+# from db_utils import *
 
 
 import networkx as nx
@@ -449,6 +450,7 @@ def generate_sql(plan):
 # 6. conds_dict, 在后续sql构造环节，每个原始查询需要知道在Share节点中涉及到哪些谓词，{plan_idx:conds}
 class GlobalPlan:
     def __init__(self):
+        self.env_config = config.env_config
         self.G = nx.DiGraph()
         self.roots = [] # 保存每个singlePlan在globalPlan中对应的node id
         self.singlePlans = []
@@ -488,7 +490,7 @@ class GlobalPlan:
         for i in range(g2.number_of_nodes()-1,-1,-1):
             other_table_entries = g2.nodes[i]["table_entries"]
             for node, node_data in self.G.nodes.items():
-                if(node_data["table_entries"] == other_table_entries and len(other_table_entries) >= d['sys_args']['mv_min_size']):
+                if(node_data["table_entries"] == other_table_entries and len(other_table_entries) >= config.d['sys_args']['mv_min_size']):
                     return node, i
         return -1, -1
     
@@ -690,8 +692,8 @@ def convert_nx_to_pyg(G):
         
 
 if __name__ == '__main__':
-    plan1 = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
-    plan2 = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/2.sql")
+    # plan1 = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/1.sql")
+    # plan2 = build_and_save_optimizer_plan("/data/homedata/lch/GPRF/2.sql")
     # im = plan1.render()
     # im.save('/data/homedata/lch/GPRF/im1.png')
     # im = plan2.render()
