@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, global_mean_pool, TopKPooling
+from torch_geometric.nn import GCNConv, global_mean_pool, SAGPooling
 from torch_geometric.data import Batch
 
 class Net(nn.Module):
@@ -9,14 +9,18 @@ class Net(nn.Module):
         super().__init__()
         self.gp_gnn = ConvGNN()
         self.sp_gnn = ConvGNN()
+        self.fc = FC()
     
     def forward(self, input):
         # 分别为全局plan，当前plan，query
         gp, sp= input
-        out1 = self.gp_gnn(gp)
+        if gp is None:
+            out1 = torch.zeros(self.gp_gnn.out_channels)
+        else :
+            out1 = self.gp_gnn(gp)
         out2 = self.sp_gnn(sp)
-        concat = torch.concatenate((out1, out2))
-        out = FC(concat)
+        concat = torch.concatenate((out1, out2.view(-1)))
+        out = self.fc(concat)
         return out
     
 def FC(d_in = 128 * 2, d_out = 256, fc_nlayers = 4, drop = 0.5):
@@ -31,7 +35,10 @@ def FC(d_in = 128 * 2, d_out = 256, fc_nlayers = 4, drop = 0.5):
 class ConvGNN(nn.Module):
     def __init__(self, in_channels = 45, hidden_channels = 128, out_channels = 128, num_layers=4):
         super(ConvGNN, self).__init__()
-        
+        self.in_chaanels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+        self.num_layers = num_layers
         self.convs = nn.ModuleList()
         self.pools = nn.ModuleList()
         
@@ -39,43 +46,19 @@ class ConvGNN(nn.Module):
         for i in range(num_layers):
             in_dim = in_channels if i == 0 else hidden_channels
             out_dim = hidden_channels
-            
-            # 添加图卷积层
             self.convs.append(GCNConv(in_dim, out_dim))
-            
-            # 每隔一层添加池化层
-            if i % 2 == 1:
-                self.pools.append(TopKPooling(out_dim, ratio=0.5))
+            self.pools.append(SAGPooling(out_dim, ratio=0.5))
         
         # 最终全连接层
         self.lin = nn.Linear(hidden_channels, out_channels)
 
-    def forward(self, input, batch = torch.cat([torch.zeros(100)]).long()):
-        # 保存中间结果用于跳跃连接
+    def forward(self, input):
         x = input.x
         edge_index = input.edge_index
-        x_all = []
-        edge_index_all = []
-        batch_all = []
-        
         for i, (conv, pool) in enumerate(zip(self.convs, self.pools)):
-            # 图卷积操作
             x = conv(x, edge_index)
             x = F.relu(x)
-            
-            # 每隔一层进行池化
-            if i % 2 == 1:
-                x, edge_index, _, batch, _, _ = pool(x, edge_index, None, batch)
-                
-                # 保存中间结果
-                x_all.append(x)
-                edge_index_all.append(edge_index)
-                batch_all.append(batch)
-        
-        # 使用所有中间层的特征进行平均
-        x = torch.cat([global_mean_pool(x, batch) for x, batch in zip(x_all, batch_all)], dim=1)
-        
-        # 全连接层
+            x, edge_index ,_,_,_,_= pool(x, edge_index)
         x = self.lin(x)
         return F.log_softmax(x, dim=1)
 

@@ -1,6 +1,7 @@
 import json
 import yaml
 import psycopg2
+import glob
 
 config_path = "./config/config.yml"
 env_path = "./config/postgres_env_config.json"
@@ -28,4 +29,5 @@ with open(config_path, 'r') as file:
 with open(env_path, "r") as f:
         env_config = json.load(f)
 conn = psycopg2.connect(host = d['db_args']['host'],user = d['db_args']['user'],password = d['db_args']['password'],database = d['db_args']['db'])
-print(1)
+
+

@@ -90,13 +90,14 @@ class Env():
         self.plan.join(*tables_to_join)
         return self.get_obs(), self.reward(), self.is_done, {}
 
-    def reset(self, idxs=None):
+    def reset(self, batch):
         self.plans.clear()
         self.query_costs.clear()
-        for idx in idxs:
-            self.plans.append(SinglePlan(*self.db_data[self.query_id]))
+        for sql_name in batch:
+            self.plans.append(SinglePlan(*self.db_data[sql_name]))
         self.plan_idx = 0
         self.current_step = 0
+        self.plan = self.plans[0]
     
     def done(self):
         return self.plan_idx == len(self.plans)
@@ -164,6 +165,9 @@ class PlanEncoder():
     
     # 返回矩阵和边信息，不是一个向量
     def encode(self, plan):
+        
+        if len(plan.roots) == 0:
+            return None
         plan = self.node_encode(plan)
         # 获取所有节点并排序，确保顺序一致
         nodes = list(plan.G.nodes())
@@ -178,8 +182,8 @@ class PlanEncoder():
         targets = [node_idx[e[1]] for e in edges]
 
         edge_index = torch.tensor([sources, targets], dtype=torch.long)
-
-        return Data(x=node_vecs, edge_index=edge_index)
+        x = torch.tensor(node_vecs, dtype=torch.float32)
+        return Data(x=x, edge_index=edge_index)
 
     def node_encode(self, plan):
         feature_list = ['type', 'tables']
@@ -199,8 +203,8 @@ class PlanEncoder():
                             vec[2] = 1
                         encoded_vec = np.concatenate((encoded_vec, vec), axis = 0)
                     elif feature == 'tables':
-                        vec1 = np.zeros(len(self.rels))
-                        vec2 = np.zeros(len(self.rels))
+                        vec1 = np.zeros(len(self.env.rels))
+                        vec2 = np.zeros(len(self.env.rels))
                         
                         if(node_data['type'] == 'Scan'):
                             vec1[self.env.rel_to_idx[plan.alias_to_table[list(node_data['table_entries'])[0]]]] = 1

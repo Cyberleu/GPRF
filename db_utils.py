@@ -9,6 +9,7 @@ import psycopg2
 from moz_sql_parser import parse
 import os
 import config
+import json
 
 from plan import SinglePlan
 
@@ -234,7 +235,6 @@ def _parse_single_query_condition2(qc):
         if isinstance(right, str):
             right = f"'{right}'"
 
-        cond = f"{v[0]} BETWEEN {left} AND {right}"
         cond['entry_name'] = v[0].split('.')[0]
         cond["col"] = v[0].split('.')[1]
         cond["op"] = k
@@ -586,3 +586,23 @@ def scheme_to_minmax_scheme(conn, scheme):
             else:
                 minmax_scheme[table_name][column] = {'numeric': False}
     return minmax_scheme
+
+def generate_env_config():
+    env_config = {}
+    # if os.path.exists(config.env_path):
+    #     env_config = config.read_json_file(config.env_path)
+    env_config['db_data'] = {}
+    sql_list = []
+    job_train_path = config.d['sys_args']['job_train_path']
+    x_train = glob.glob(job_train_path + "[0-9]*.sql")
+    for each in x_train:
+        with open(each, 'r') as file:
+            q = file.read()
+            sql_list.append(q)
+        query_tables, reverse_aliases_dict, query_conditions , _ = parse_sql_query(q)
+        query_name = os.path.basename(each)
+        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions]
+    with open(config.env_path, "w") as f:
+        json.dump(env_config, f)
+# generate_env_config()
+    
