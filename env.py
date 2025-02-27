@@ -48,7 +48,7 @@ class Env():
         # 记录每个query的cost
         self.query_costs = {}
         self.view_costs = {}
-        self.net = Net()
+        self.net = Net(d_out = self.N_rels * self.N_rels)
         self.plan_encoder = PlanEncoder(self)
         self.query_encoder = QueryEncoder(self)
         
@@ -63,7 +63,7 @@ class Env():
         """
         Retrieve relations to join from action.
         """
-        r1, r2 = self.actions[action]
+        r1, r2 = action
         n1 = self.plan.rel_to_node(self.rels[r1])
         n2 = self.plan.rel_to_node(self.rels[r2])
         return n1, n2
@@ -80,15 +80,20 @@ class Env():
         valid_actions[valid_actions_ids] = 1.
         return valid_actions
 
-    @property
+    # 单各plan是否完成
     def is_done(self):
+        return self.plan.is_complete and self.plan_idx == len(self.plans)-1
+    
+    # 总体是否完成
+    def is_complete(self):
         return self.plan.is_complete
 
     def step(self, action):
         self.current_step += 1
-        tables_to_join = self.from_action(action)
-        self.plan.join(*tables_to_join)
-        return self.get_obs(), self.reward(), self.is_done, {}
+        
+        tables_to_join = self.plan.action_to_join(action)
+        self.plan.join(tables_to_join)
+        return self.get_state(), self.reward(), self.is_complete
 
     def reset(self, batch):
         self.plans.clear()
@@ -99,22 +104,29 @@ class Env():
         self.current_step = 0
         self.plan = self.plans[0]
     
-    def done(self):
-        return self.plan_idx == len(self.plans)
-    
+    # mask的shape是N_rels*N_rels,只当前状态下哪两个表之间可以连接就为1
     def get_mask(self):
-        def find_inner_join_actions(p):
-            actions = []
-            roots = p.get_roots()
-            for i, n1 in enumerate(roots):
-                for j, n2 in enumerate(roots):
-                    if i != j and p.is_inner_join(n1, n2):
-                        actions.append((i, j))
-            return actions
-        size = len(self.plan.get_roots())
-        m = torch.zeros((size, size), dtype=bool)
-        m[list(zip(*find_inner_join_actions(self.plan)))] = 1
+        m = torch.zeros((self.N_rels, self.N_rels), dtype=bool)
+        roots = p.get_roots()
+        for i, n1 in enumerate(roots):
+            for j, n2 in enumerate(roots):
+                if i != j:
+                    join_list = self.plan.get_joinable_list(n1, n2)
+                    m[self.rel_to_idx[join_list[0]]][self.rel_to_idx[join_list[1]]] = 1
         return m
+                           
+    # def get_mask(self):
+    #     def find_inner_join_actions(p):
+    #         actions = []
+    #         roots = p.get_roots()
+    #         for i, n1 in enumerate(roots):
+    #             for j, n2 in enumerate(roots):
+    #                 if i != j and p.is_inner_join(n1, n2):
+    #                     actions.append((i, j))
+    #         return actions
+    #     m = torch.zeros((self.N_rels, self.N_rels), dtype=bool)
+    #     m[list(zip(*find_inner_join_actions(self.plan)))] = 1
+    #     return m
     
     # 通过增量的方式获取GlobalPlan的cost,判断新加的plan是否能共享
     def get_cost(self, exec_time = False):
@@ -143,13 +155,15 @@ class Env():
                 query_cost = get_cost_from_db(query_sql, self.conn, exec_time = exec_time)
                 self.query_costs[query_sql] = query_cost
         return sum(list(self.view_costs.values())) + sum(list(self.query_costs.values()))
-       
+    
     def get_state(self):
         return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan)
         
     def reward(self):
         if not self.is_done():
-            return -0.05
+            return None
+        else:
+            return self.get_cost()
         
 
     def render(self):

@@ -56,9 +56,17 @@ class SinglePlan():
         return sorted(self.roots)
 
     def action_to_join(self, action):
-        a1, a2 = action
-        roots = self.get_roots()
-        return roots[a1], roots[a2]
+        t1, t2 = action
+        for i, root1 in enumerate(self.roots):
+            for j, root2 in enumerate(self.roots):
+                if i != j and (t1 in self.G.nodes[root1]) and t2 in self.G.nodes[root2]:
+                    return root1, root2 
+            
+
+    # def action_to_join(self, action):
+    #     a1, a2 = action
+    #     roots = self.get_roots()
+    #     return roots[a1], roots[a2]
 
     def join_to_action(self, join):
         j1, j2 = join
@@ -180,6 +188,17 @@ class SinglePlan():
                 if frozenset((r1, r2)) in self._query_join_conditions:
                     return True
         return False
+    
+    # 返回两个root下可连接的表list
+    def get_joinable_list(self, n1, n2):
+        join_list = []
+        left_tables = self.G.nodes[n1]["table_entries"]
+        right_tables = self.G.nodes[n2]["table_entries"]
+        for r1 in left_tables:
+            for r2 in right_tables:
+                if frozenset((r1, r2)) in self._query_join_conditions:
+                    join_list.append((self.alias_to_table[r1], self.alias_to_table[r2]))           
+        return join_list
 
     def rel_to_node(self, rel):
         node = self.rel_leaves[rel]

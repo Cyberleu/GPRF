@@ -5,11 +5,11 @@ from torch_geometric.nn import GCNConv, global_mean_pool, SAGPooling
 from torch_geometric.data import Batch
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, d_out):
         super().__init__()
         self.gp_gnn = ConvGNN()
         self.sp_gnn = ConvGNN()
-        self.fc = FC()
+        self.fc = FC(d_out = d_out)
     
     def forward(self, input):
         # 分别为全局plan，当前plan，query

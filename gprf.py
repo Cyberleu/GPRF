@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 import re
 from env import Env
 import config
+import random
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ LOG = logging.getLogger(__name__)
 INF = 1e9
 
 class Agent(nn.Module):
-    def __init__(self, net, eps=1e-2, device='cpu'):
+    def __init__(self, net, eps=0.5, device='cpu'):
         super().__init__()
         self.net = net.to(device=device)
         self.device = device
@@ -37,15 +38,18 @@ class Agent(nn.Module):
         #         LOG.debug(f"Training parameters: {unfreezing_p}")
 
     def predict(self, inputs, mask):
-
-        logit = self.predict_net(self.net, inputs)
+        mask_dim = mask.shape
+        logit = self.net(inputs)
         dims = logit.shape
         masked_logit = torch.where(mask.view(dims).to(logit.device),
                                    logit, torch.tensor(float("-inf")).to(logit.device))
-        probs = masked_logit.view(dims[0], -1).softmax(1).cpu().numpy()
-        actions = [np.random.choice(len(prob), p=prob) for prob in probs]
-        actions = list(zip(*np.unravel_index(actions, dims[1:])))
-        return actions
+        probs = masked_logit.softmax(-1).detach().numpy()
+        if np.random.uniform() < self.eps:
+            action_idx = np.random.choice(range(0,len(probs)), 1, p=probs)
+        else :
+            action_idx = np.argmax(probs)
+        action = np.unravel_index(action_idx, mask_dim)
+        return (action[0][0], action[1][0])
 
     def train_net(self, train_data, epochs, criterion, batch_size, lr, scheduler, gamma, value_loss_coef, entropy_loss_coef, weight_decay, clip_grad_norm, betas, val_data=None, val_steps=100, min_iters=1000):
         LOG.info(f"Start training: {time.ctime()}")
@@ -85,34 +89,58 @@ class Agent(nn.Module):
                 {iters} iterations.""")
         return pg_loss.item(), value_loss.item(), entropy_loss.item()
 
-    def predict_net(self, net, x_batch):
-        with evaluation_mode(net):
-            x_batch = to_device(x_batch, self.device)
-            out = net(x_batch)
-        return out
 
+
+def random_batch_splitter(sql_list, batch_size):
+    """
+    将给定的SQL语句列表按照指定的batch_size随机分割成多个子列表。
+
+    Args:
+        sql_list (list): 包含SQL语句的列表。
+        batch_size (int): 每一批的大小。
+
+    Returns:
+        list: 包含随机排序并按batch_size分组后的SQL语句的列表。
+    """
+    if not sql_list or batch_size <= 0:
+        return []
+
+    # 创建一个副本以避免修改原列表
+    shuffled_sql = sql_list.copy()
+    random.shuffle(shuffled_sql)
+
+    batches = []
+    for i in range(0, len(shuffled_sql), batch_size):
+        batches.append(shuffled_sql[i:i+batch_size])
+
+    return batches
 
 class GPRF():
-    def __init__(self, baseline, batches):
+    def __init__(self, baseline):
         self.baseline = baseline
-        self.batches = batches
         self.d = config.d
         self.env_config = config.env_config
+        self.sql_names = list(self.env_config['db_data'].keys())
         self.env = Env()
         self.agent = Agent(self.env.net)
     def run(self):
-        for ep in range(self.d['train_args']['episodes']):
-            total_reward = 0
-            state = self.env.reset()
-            while not self.env.done():
-                mask = self.env.get_mask()
-                action = self.agent.predict(state, mask)
-                next_state, reward, done = self.env.step(action)  
-                self.agent.store_transition(state, action, reward, next_state, done, next_mask)
-                self.agent.train()
-                
-                state = next_state
-                total_reward += reward
+        for epoch in range(self.d['train_args']['epochs']):
+        # 模拟实际情况，sql按批到来
+            batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
+            for batch in batches:
+                for ep in range(self.d['train_args']['episodes']):
+                    total_reward = 0
+                    state = self.env.reset(batch)
+                    while not self.env.is_complete():
+                        mask = self.env.get_mask()
+                        state = self.env.get_state()
+                        action = self.agent.predict(state, mask)
+                        _, cost, is_done = self.env.step(action)  
+                        # self.agent.store_transition(state, action, reward, next_state, done, next_mask)
+                        # self.agent.train()
+                        
+                        if is_done:
+                            
             
 
     def logger(self):
