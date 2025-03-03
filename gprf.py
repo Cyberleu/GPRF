@@ -45,11 +45,12 @@ class Agent(nn.Module):
                                    logit, torch.tensor(float("-inf")).to(logit.device))
         probs = masked_logit.softmax(-1).detach().numpy()
         if np.random.uniform() < self.eps:
-            action_idx = np.random.choice(range(0,len(probs)), 1, p=probs)
+            action_idx = np.random.choice(range(0,len(probs)), 1, p=probs)[0]
         else :
             action_idx = np.argmax(probs)
         action = np.unravel_index(action_idx, mask_dim)
-        return (action[0][0], action[1][0])
+        assert mask[action[0]][action[1]] == True
+        return action
 
     def train_net(self, train_data, epochs, criterion, batch_size, lr, scheduler, gamma, value_loss_coef, entropy_loss_coef, weight_decay, clip_grad_norm, betas, val_data=None, val_steps=100, min_iters=1000):
         LOG.info(f"Start training: {time.ctime()}")
@@ -123,26 +124,31 @@ class GPRF():
         self.sql_names = list(self.env_config['db_data'].keys())
         self.env = Env()
         self.agent = Agent(self.env.net)
+        self.count = 0
     def run(self):
         for epoch in range(self.d['train_args']['epochs']):
         # 模拟实际情况，sql按批到来
             batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
-            for batch in batches:
+            for batch_idx in range(len(batches)):
+                batch = batches[batch_idx]
                 for ep in range(self.d['train_args']['episodes']):
                     total_reward = 0
                     state = self.env.reset(batch)
                     while not self.env.is_complete():
+                        
                         mask = self.env.get_mask()
                         state = self.env.get_state()
-                        action = self.agent.predict(state, mask)
-                        _, cost, is_done = self.env.step(action)  
+                        action = self.agent.predict(state, mask)   
+                        cost, is_done, _= self.env.step(action) 
+                        if is_done:
+                            print(f'当前训练进度 epoch:{epoch} batch_idx:{batch_idx} episode:{ep} sql_name:{self.env.sql_names[self.env.plan_idx-1]}')
+                        
                         # self.agent.store_transition(state, action, reward, next_state, done, next_mask)
                         # self.agent.train()
                         
-                        if is_done:
+                        # if is_done:
                             
-            
-
+        
     def logger(self):
         writer = SummaryWriter(self.logdir)
         while self.episode.value < self.total_episodes * self.n_queries:

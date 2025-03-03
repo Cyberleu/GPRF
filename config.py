@@ -5,6 +5,7 @@ import glob
 
 config_path = "./config/config.yml"
 env_path = "./config/postgres_env_config.json"
+offical_path = "./config/official.json"
 d = {}
 env_config = {}
 

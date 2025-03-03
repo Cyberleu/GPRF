@@ -10,6 +10,7 @@ from moz_sql_parser import parse
 import os
 import config
 import json
+from psycopg2 import sql
 
 from plan import SinglePlan
 
@@ -17,7 +18,7 @@ DB_SETTINGS = """BEGIN;
                 SET enable_nestloop = off;
                 SET join_collapse_limit=20;
                 SET from_collapse_limit=20;
-                SET statement_timeout = 300000;
+                SET statement_timeout = 5000;
                 COMMIT;
                 """
 
@@ -170,7 +171,7 @@ def _parse_single_query_condition2(qc):
             cond['entry_name'] = v[0].split('.')[0]
             cond['col'] = v[0].split('.')[1]
             cond['op'] = simple_ops[k]
-            cond['pred'] = second_statement['literal']
+            cond['pred'] = f'\'{second_statement["literal"]}\''
         elif isinstance(second_statement, str):
             names.append(v[1].split('.')[0])
             if(len(names) == 2):
@@ -182,7 +183,7 @@ def _parse_single_query_condition2(qc):
                 cond['entry_name'] = v[0].split('.')[0]
                 cond['col'] = v[0].split('.')[1]
                 cond['op'] = simple_ops[k]
-                cond['pred'] = second_statement
+                cond['pred'] = f'\'{second_statement}\''
         elif isinstance(second_statement, (int, float)):
             second_statement = str(second_statement)
             cond['entry_name'] = v[0].split('.')[0]
@@ -211,7 +212,10 @@ def _parse_single_query_condition2(qc):
     elif k in exists_ops.keys():
         v = [v]
         names = [v[0].split('.')[0]]
-        cond = f"{v[0]} {exists_ops[k]}"
+        cond['entry_name'] = v[0].split('.')[0]
+        cond["col"] = v[0].split('.')[1]
+        cond["op"] = 'IS'
+        cond["pred"] = exists_ops[k][3:]
     elif k in ['or', 'and']:
         names = []
         cond = []
@@ -587,8 +591,40 @@ def scheme_to_minmax_scheme(conn, scheme):
                 minmax_scheme[table_name][column] = {'numeric': False}
     return minmax_scheme
 
+def drop_all_materialized_views():
+    try:
+        # 连接数据库
+        conn = config.conn
+        cursor = conn.cursor()
+
+        # 查询所有物化视图（排除系统视图）
+        query = """
+            SELECT schemaname, matviewname 
+            FROM pg_matviews 
+            WHERE schemaname NOT IN ('pg_catalog', 'information_schema');
+        """
+        cursor.execute(query)
+        views = cursor.fetchall()
+        # 生成删除语句
+        drop_commands = []
+        for schema, view in views:
+            drop_commands.append(
+                sql.SQL("DROP MATERIALIZED VIEW IF EXISTS {}.{} CASCADE;")
+                .format(sql.Identifier(schema), sql.Identifier(view))
+            )
+
+        # 执行删除
+        for cmd in drop_commands:
+            cursor.execute(cmd)
+        # 提交事务
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"操作失败: {e}")
+
+
 def generate_env_config():
-    env_config = {}
+    env_config = config.read_json_file(config.offical_path)
     # if os.path.exists(config.env_path):
     #     env_config = config.read_json_file(config.env_path)
     env_config['db_data'] = {}
@@ -599,10 +635,10 @@ def generate_env_config():
         with open(each, 'r') as file:
             q = file.read()
             sql_list.append(q)
-        query_tables, reverse_aliases_dict, query_conditions , _ = parse_sql_query(q)
+        query_tables, reverse_aliases_dict, query_conditions , query_select = parse_sql_query(q)
         query_name = os.path.basename(each)
-        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions]
+        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
-# generate_env_config()
+generate_env_config()
     

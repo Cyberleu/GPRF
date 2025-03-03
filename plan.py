@@ -55,11 +55,12 @@ class SinglePlan():
     def get_roots(self):
         return sorted(self.roots)
 
+    # 传入的参数是表名， 因此要检查两个节点的alias是否存在连接关系
     def action_to_join(self, action):
         t1, t2 = action
         for i, root1 in enumerate(self.roots):
             for j, root2 in enumerate(self.roots):
-                if i != j and (t1 in self.G.nodes[root1]) and t2 in self.G.nodes[root2]:
+                if i != j and (t1 in self.G.nodes[root1]['tables']) and t2 in self.G.nodes[root2]['tables'] and self.is_inner_join(root1, root2):
                     return root1, root2 
             
 
@@ -257,14 +258,26 @@ class SinglePlan():
     def render(self, attr=None, tables=False, dpi=80):
         labels = {}
         for node in self.G.nodes:
-            attrs = self.G.nodes[node]
-            name = attrs.get("name", str(node))
-            if tables and name in self.alias_to_table:
-                name = self.alias_to_table[name]
-            if attr is not None and attr in attrs:
-                name = attrs[attr]
+            node_data = self.G.nodes[node]
+            if node_data['type'] == 'Scan':
+                name = node_data['name']
+            else:
+                cond = node_data["conds"][0]
+                name = f'{cond["left_entry_name"]}.{cond["left_col_name"]} = {cond["right_entry_name"]}.{cond["right_col_name"]}'
             labels[node] = name
         return render(self.G, labels, dpi)
+    
+    # def render(self, attr=None, tables=False, dpi=80):
+    #     labels = {}
+    #     for node in self.G.nodes:
+    #         attrs = self.G.nodes[node]
+    #         name = attrs.get("name", str(node))
+    #         if tables and name in self.alias_to_table:
+    #             name = self.alias_to_table[name]
+    #         if attr is not None and attr in attrs:
+    #             name = attrs[attr]
+    #         labels[node] = name
+    #     return render(self.G, labels, dpi)
 
     def save(self, path):
         m = {n: i for i, n in enumerate(self.G.nodes)}
@@ -473,10 +486,15 @@ class GlobalPlan:
         self.G = nx.DiGraph()
         self.roots = [] # 保存每个singlePlan在globalPlan中对应的node id
         self.singlePlans = []
+        self.alias_to_table = {}
+    def reset(self):
+        self.__init__()
     def merge(self, plan):
         self.singlePlans.append(plan)
         plan_idx = len(self.singlePlans)-1
-        if(len(self.G) == 0):
+        for alias, table  in plan.alias_to_table.items():
+            self.alias_to_table[alias] = table
+        if(len(self.roots) == 0):
             self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
             self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
             return
@@ -490,11 +508,11 @@ class GlobalPlan:
             self.merge_cond(plan.G, node1, node2, plan_idx)
             self.merge_select(plan, node1, node2)
             self.G.nodes[node1]["type"] = "Share"
-            self.G.nodes[node1]["share_list"].append(len(self.singlePlans)-1)
             pres = list(plan.G.predecessors(node2))
+            self.G.nodes[node1]["share_list"].append(get_root(self.G, node1))
             # 本身即为根节点
             if(len(pres) == 0):
-                self.roots.add(node1)
+                self.roots.append(node1)
             else:
                 # 删除-合并-连接
                 succs = list(plan.G.successors(node2))
@@ -502,6 +520,7 @@ class GlobalPlan:
                 self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
                 self.G.add_edge(f'{plan_idx}_{pres[0]}', node1)
                 self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
+            self.G.nodes[node1]["share_list"].append(self.roots[-1])
 
     # 对于子树覆盖相同表的节点可视为Share算子
     def find_shared_op(self, g2):
@@ -554,6 +573,7 @@ class GlobalPlan:
         if self.G.nodes[node1]['type'] != 'Share':
             conds = []
             succs = list(nx.descendants(self.G, node1))
+            
             for node_idx in succs:
                 node_data = self.G.nodes[node_idx]
                 if(node_data["type"] == "Scan" and len(node_data['conds']) > 0):
@@ -680,9 +700,20 @@ class GlobalPlan:
                 l_subquery = _get_leading(l)
                 r_subquery = _get_leading(r)
                 return f"({l_subquery} {r_subquery})"
-        if Leading == True:
+        if Leading == True and not is_view:
             sql = f"/*+ Leading({_get_leading(node_idx)}) */" + sql
+        print(f'生成sql：{sql}')
         return sql
+    
+def get_root(graph, node):
+    current = node
+    while True:
+        # 获取当前节点的父节点列表
+        predecessors = list(graph.predecessors(current))
+        if not predecessors:  # 没有父节点，说明是根节点
+            return current
+        current = predecessors[0]  # 二叉树中每个节点只有一个父节点
+
     
 def get_plan_idx(node):
     parts = node.split('_')

@@ -51,6 +51,7 @@ class Env():
         self.net = Net(d_out = self.N_rels * self.N_rels)
         self.plan_encoder = PlanEncoder(self)
         self.query_encoder = QueryEncoder(self)
+        self.sql_names = []
         
 
     def get_obs(self):
@@ -82,20 +83,32 @@ class Env():
 
     # 单各plan是否完成
     def is_done(self):
-        return self.plan.is_complete and self.plan_idx == len(self.plans)-1
+        return self.plan.is_complete
     
     # 总体是否完成
     def is_complete(self):
-        return self.plan.is_complete
+        return self.plan_idx == len(self.plans)
 
     def step(self, action):
         self.current_step += 1
-        
-        tables_to_join = self.plan.action_to_join(action)
-        self.plan.join(tables_to_join)
-        return self.get_state(), self.reward(), self.is_complete
+        table1, table2 = self.rels[action[0]], self.rels[action[1]]
+        node1, node2 = self.plan.action_to_join((table1, table2))
+        self.plan.join(node1, node2)
+        im = self.plan.render()
+        im.save(f'/data/homedata/lch/GPRF/im.png') 
+        is_done = self.is_done()
+        if is_done:
+            self.global_plan.merge(self.plan)
+        reward = self.reward()
+        if is_done:
+            self.plan_idx += 1
+            if self.plan_idx < len(self.plans):
+                self.plan = self.plans[self.plan_idx]
+        return reward, is_done, self.is_complete()
 
     def reset(self, batch):
+        self.global_plan.reset()
+        self.sql_names = batch
         self.plans.clear()
         self.query_costs.clear()
         for sql_name in batch:
@@ -103,16 +116,19 @@ class Env():
         self.plan_idx = 0
         self.current_step = 0
         self.plan = self.plans[0]
+        # 删除掉上一轮所有的物化视图（只有训练中使用，实际环境下可按照算法保留上一批的物化视图）
+        drop_all_materialized_views()
     
     # mask的shape是N_rels*N_rels,只当前状态下哪两个表之间可以连接就为1
     def get_mask(self):
         m = torch.zeros((self.N_rels, self.N_rels), dtype=bool)
-        roots = p.get_roots()
+        roots = self.plan.get_roots()
         for i, n1 in enumerate(roots):
             for j, n2 in enumerate(roots):
                 if i != j:
                     join_list = self.plan.get_joinable_list(n1, n2)
-                    m[self.rel_to_idx[join_list[0]]][self.rel_to_idx[join_list[1]]] = 1
+                    for join in join_list:  
+                        m[self.rel_to_idx[join[0]]][self.rel_to_idx[join[1]]] = 1
         return m
                            
     # def get_mask(self):
@@ -134,7 +150,7 @@ class Env():
         shared_nodes = self.global_plan.lookup_by_value_within_node(root, 'type', 'Share')
         if(len(shared_nodes) == 0):
             # 无法进行共享， 则直接加上该sql的cost
-            query_sql = self.global_plan.generate_sql(root)
+            query_sql = self.global_plan.generate_sql(root, False)
             query_cost = get_cost_from_db(query_sql, self.conn, exec_time)
             self.query_costs[root] = query_cost
         else:
@@ -159,7 +175,7 @@ class Env():
     def get_state(self):
         return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan)
         
-    def reward(self):
+    def reward(self, ):
         if not self.is_done():
             return None
         else:
@@ -186,7 +202,7 @@ class PlanEncoder():
         # 获取所有节点并排序，确保顺序一致
         nodes = list(plan.G.nodes())
         node_idx = {node: idx for idx, node in enumerate(nodes)}
-        node_vecs = np.zeros((0, plan.G.nodes[0]['feature'].shape[0]))
+        node_vecs = np.zeros((0, list(plan.G.nodes.values())[0]['feature'].shape[0]))
         for node_index in nodes:
             node_vecs = np.vstack((node_vecs, plan.G.nodes[node_index]['feature'].reshape(1,-1)))
         
@@ -202,10 +218,10 @@ class PlanEncoder():
     def node_encode(self, plan):
         feature_list = ['type', 'tables']
         for node_index, node_data in plan.G.nodes.items():
-            encoded_vec = np.array([])
             node_data = plan.G.nodes[node_index]
             # 每个节点所需编码信息，type为one-hot编码，表示该节点的类型。tables表示该节点涉及到表（若为scan则为one-hot+0向量，join/share为one-hot+one-hot）
             if not "feature" in node_data:
+                encoded_vec = np.array([])
                 for feature in feature_list:
                     if feature == 'type':
                         vec = np.zeros(3)
@@ -227,7 +243,7 @@ class PlanEncoder():
                                 vec1[self.env.rel_to_idx[plan.alias_to_table[cond['left_entry_name']]]] = 1
                                 vec2[self.env.rel_to_idx[plan.alias_to_table[cond['right_entry_name']]]] = 1
                         encoded_vec = np.concatenate((encoded_vec, vec1, vec2), axis = 0)
-            plan.G.nodes[node_index]['feature'] = encoded_vec
+                plan.G.nodes[node_index]['feature'] = encoded_vec
         return plan        
 
         
