@@ -279,6 +279,36 @@ class GPRF():
 
             episode += 1
             
+    
+class TrajectoryStorage():
+    def __init__(self):
+        # 记录batch执行的最短时间
+        self.db_data = config.env_config['db_data']
+        self.batch_cost = dict() # {(sql_name, sql_name...) : (total_cost, total_time)}
+        self.episodes = []
+
+    def set_env(self, env):
+        self.env = env
+
+    def split_trajectory(self, plan, reward):
+        traj = []
+        for i, (node, action) in enumerate(plan._joins[::-1]):
+            plan.disjoin(node)
+            obs = self.env.get_status(deepcopy(plan))
+            traj.append(
+                [obs, (action, self.env.get_mask(plan), i == 0, (i == 0)*reward)])
+        return traj[::-1]
+
+    def append(self, plan, final_reward):
+        self.episodes.append(self.split_trajectory(
+            deepcopy(plan), final_reward))
+
+    def get_dataset(self, n=1000):
+        """Get last n trajectories"""
+        return self.episodes[-n:]
+    def  get_
+
+            
 def to_device(obj, device):
     if isinstance(obj, torch.Tensor):
         return obj.to(device=device)

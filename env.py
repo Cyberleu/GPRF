@@ -52,6 +52,7 @@ class Env():
         self.plan_encoder = PlanEncoder(self)
         self.query_encoder = QueryEncoder(self)
         self.sql_names = []
+        self.tables_encode = torch.tensor((0, self.N_rels))
         
 
     def get_obs(self):
@@ -116,6 +117,13 @@ class Env():
         self.plan_idx = 0
         self.current_step = 0
         self.plan = self.plans[0]
+        # 建立该batch的全局编码
+        for plan in self.plans:
+            pos = torch.zeros(self.N_rels)
+            for _, table in plan.alias_to_tables.items():
+                pos[table] = pos[table] + 1
+            torch.vstack((self.tables_encode, pos))
+  
         # 删除掉上一轮所有的物化视图（只有训练中使用，实际环境下可按照算法保留上一批的物化视图）
         drop_all_materialized_views()
     
@@ -173,7 +181,7 @@ class Env():
         return sum(list(self.view_costs.values())) + sum(list(self.query_costs.values()))
     
     def get_state(self):
-        return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan)
+        return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
         
     def reward(self, ):
         if not self.is_done():
@@ -188,7 +196,7 @@ class Env():
     def find_cost(self, p):
         return list(p.G.nodes(data=True))[-1][-1]['cost'][0]
 
-# 主要是plan level和query level的encoding
+# 主要是plan level和query level 的encoding
 class PlanEncoder():
     def __init__(self, env):
         self.env = env
@@ -423,6 +431,30 @@ class QueryEncoder():
             index_features
         )
         conn.close()
+        
+class TrajectoryStorage():
+    def __init__(self):
+        self.episodes = []
+
+    def set_env(self, env):
+        self.env = env
+
+    def split_trajectory(self, plan, reward):
+        traj = []
+        for i, (node, action) in enumerate(plan._joins[::-1]):
+            plan.disjoin(node)
+            obs = self.env.get_status(deepcopy(plan))
+            traj.append(
+                [obs, (action, self.env.get_mask(plan), i == 0, (i == 0)*reward)])
+        return traj[::-1]
+
+    def append(self, plan, final_reward):
+        self.episodes.append(self.split_trajectory(
+            deepcopy(plan), final_reward))
+
+    def get_dataset(self, n=1000):
+        """Get last n trajectories"""
+        return self.episodes[-n:]
 
 
 import json

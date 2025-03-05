@@ -18,9 +18,9 @@ DB_SETTINGS = """BEGIN;
                 SET enable_nestloop = off;
                 SET join_collapse_limit=20;
                 SET from_collapse_limit=20;
-                SET statement_timeout = 5000;
                 COMMIT;
                 """
+# SET statement_timeout = 5000;
 
 LOG = logging.getLogger(__name__)
 
@@ -295,7 +295,7 @@ def db_rollback(conn):
     curs.close()
 
 
-def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False):
+def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False, time_limit = 5000):
     """
     DEPRECATED
     sql_query: str
@@ -311,6 +311,9 @@ def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False):
     cur = conn.cursor()
     try:
         cur.execute(DB_SETTINGS)
+        # 对于物化视图生成的语句不设置时间限制
+        if not is_view:
+            cur.execute(f"""SET statement_timeout = {time_limit};COMMIT; """)
         cur.execute(f"""
         EXPLAIN (FORMAT JSON{', ANALYZE' if exec_time else ''})
         {sql_query}
@@ -319,7 +322,7 @@ def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False):
     except Exception as e:
         cur.close()
         db_rollback(conn)
-        raise e
+        return -1
     cur.close()
 
     if exec_time and not is_view:
@@ -623,7 +626,7 @@ def drop_all_materialized_views():
         print(f"操作失败: {e}")
 
 
-def generate_env_config():
+def generate_env_config(get_cost = True, get_time = False):
     env_config = config.read_json_file(config.offical_path)
     # if os.path.exists(config.env_path):
     #     env_config = config.read_json_file(config.env_path)
@@ -637,7 +640,12 @@ def generate_env_config():
             sql_list.append(q)
         query_tables, reverse_aliases_dict, query_conditions , query_select = parse_sql_query(q)
         query_name = os.path.basename(each)
-        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select]
+        cost, time = None, None
+        if get_cost:
+            cost = get_cost_from_db(q)
+        if get_time:
+            time = get_cost_from_db(q, exec_time = True, time_limit=3000000)
+        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, cost, time]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
 generate_env_config()

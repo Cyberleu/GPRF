@@ -9,21 +9,23 @@ class Net(nn.Module):
         super().__init__()
         self.gp_gnn = ConvGNN()
         self.sp_gnn = ConvGNN()
+        self.lstm = LSTMNetwork(input_size = 21)
         self.fc = FC(d_out = d_out)
     
     def forward(self, input):
-        # 分别为全局plan，当前plan，query
-        gp, sp= input
+        # 分别为全局plan，当前plan，batch中所有查询的table序列
+        gp, sp, bt= input
         if gp is None:
             out1 = torch.zeros(self.gp_gnn.output_dim)
         else :
             out1 = self.gp_gnn(gp)
         out2 = self.sp_gnn(sp)
-        concat = torch.concatenate((out1.view(-1), out2.view(-1)))
+        out3 = self.lstm(bt)
+        concat = torch.concatenate((out1.view(-1), out2.view(-1),out3.view(-1)))
         out = self.fc(concat)
         return out
     
-def FC(d_in = 128 * 2, d_out = 256, fc_nlayers = 4, drop = 0.5):
+def FC(d_in = 128 * 3, d_out = 256, fc_nlayers = 4, drop = 0.5):
     dims = torch.linspace(d_in, d_out, fc_nlayers+1, dtype=torch.long)
     layers = []
     for i in range(fc_nlayers-1):
@@ -107,4 +109,51 @@ class ConvGNN(nn.Module):
         # 全局平均池化得到图级向量
         x = self.global_pool(x, batch)
         return self.fc(x)
+    
+import torch
+import torch.nn as nn
+
+class LSTMNetwork(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(LSTMNetwork, self).__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
+    
+    def forward(self, x):
+        # x 形状: (batch_size, seq_len, input_size)
+        lstm_out, (h_n, c_n) = self.lstm(x)
+        
+        # 取最后一个时间步的隐藏状态 [更常用]
+        # h_n 形状: (num_layers, batch_size, hidden_size)
+        last_hidden = h_n[-1]  # 取最后一层的隐藏状态
+        
+        # 或者也可以用最后一个时间步的输出：
+        # last_output = lstm_out[:, -1, :]
+        
+        output = self.fc(last_hidden)
+        return output
+
+# 示例使用
+if __name__ == "__main__":
+    # 超参数
+    batch_size = 4
+    seq_len = 10    # 节点序列长度（定长）
+    input_size = 32  # 每个节点的编码维度
+    hidden_size = 64
+    output_size = 128
+    
+    # 初始化模型
+    model = LSTMNetwork(input_size, hidden_size, output_size)
+    
+    # 生成随机输入数据
+    x = torch.randn(seq_len, input_size)
+    
+    # 前向传播
+    out = model(x)
+    
+    print("输入形状:", x.shape)        # 输出: torch.Size([4, 10, 32])
+    print("输出形状:", out.shape)      # 输出: torch.Size([4, 128])
     

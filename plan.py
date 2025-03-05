@@ -516,6 +516,7 @@ class GlobalPlan:
             else:
                 # 删除-合并-连接
                 succs = list(plan.G.successors(node2))
+                succs.append(node2)
                 plan.G.remove_nodes_from(succs)
                 self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
                 self.G.add_edge(f'{plan_idx}_{pres[0]}', node1)
@@ -532,29 +533,40 @@ class GlobalPlan:
                     return node, i
         return -1, -1
     
-    # 对于共享节点，需要select出新加入plan所需的列
-    def merge_select(self, plan, node1, node2):
-        # 原sql中select中的内容要带上
-        for select in plan.query_select:
+    # 将merged_node中的select列合并到shared_node中,其中shared_node一定是在GlobalPlan中的
+    def merge_select_helper(self, query_select, merged_plan,shared_node, merged_node):
+        # sql中select中的内容要带上
+        for select in query_select:
             val = list(select['value'].values())[0]
             alias = val.split('.')[0]
             col = val.split('.')[1]
-            self.G.nodes[node1]['select_cols'].add((alias, col))
+            if alias in self.G.nodes[shared_node]['table_entries']:  
+                self.G.nodes[shared_node]['select_cols'].add((alias, col))
         # 和原sql的连接列要选出来
-        pres = list(nx.ancestors(plan.G, node2))
+        pres = list(nx.ancestors(merged_plan.G, merged_node))
         for node_idx in pres:
-            for cond in plan.G.nodes[node_idx]['conds']:
-                if cond['left_entry_name'] in plan.G.nodes[node2]['table_entries']:
-                    self.G.nodes[node1]['select_cols'].add((cond['left_entry_name'], cond['left_col_name']))
-                elif cond['right_entry_name'] in plan.G.nodes[node2]['table_entries']:
-                    self.G.nodes[node1]['select_cols'].add((cond['right_entry_name'], cond['right_col_name']))
+            for cond in merged_plan.G.nodes[node_idx]['conds']:
+                if cond['left_entry_name'] in self.G.nodes[shared_node]['table_entries']:
+                    self.G.nodes[shared_node]['select_cols'].add((cond['left_entry_name'], cond['left_col_name']))
+                elif cond['right_entry_name'] in self.G.nodes[shared_node]['table_entries']:
+                    self.G.nodes[shared_node]['select_cols'].add((cond['right_entry_name'], cond['right_col_name']))
         # 所有的谓词要带上
-        succs = list(nx.descendants(plan.G, node2))
-        succs.append(node2)
+        succs = list(nx.descendants(merged_plan.G, merged_node))
+        succs.append(merged_node)
         for node_idx in succs:
-            if plan.G.nodes[node_idx]['type'] == 'Scan':
-                for cond in plan.G.nodes[node_idx]['conds']:
-                    self.G.nodes[node1]['select_cols'].add((list(plan.G.nodes[node_idx]['table_entries'])[0],cond['col']))
+            if merged_plan.G.nodes[node_idx]['type'] == 'Scan':
+                for cond in merged_plan.G.nodes[node_idx]['conds']:
+                    self.G.nodes[shared_node]['select_cols'].add((list(merged_plan.G.nodes[node_idx]['table_entries'])[0],cond['col']))
+
+    
+    # 对于共享节点，需要select出新加入plan所需的列
+    def merge_select(self, plan, node1, node2):
+        # 首次合并，原sql的内容也要加上
+        if self.G.nodes[node1]["type"] != "Share":
+            plan_idx = node1.split('_')[0]
+            self.merge_select_helper(self.singlePlans[int(plan_idx)].query_select ,self , node1, node1)
+        self.merge_select_helper(plan.query_select , plan, node1, node2)
+        
 
         
     # 合并node1和node2子树中scan算子中的所有cond,注意需要将不同sql对应的cond区分开来
@@ -675,7 +687,7 @@ class GlobalPlan:
                     a1,a2,c1,c2 = node_data['conds'][0]['left_entry_name'],node_data['conds'][0]['right_entry_name'],node_data['conds'][0]['left_col_name'], node_data['conds'][0]['right_col_name'] 
                     if a1 in alias2view:
                         c1 = f'{a1}_{c1}'
-                        a1 = 'VIEW' + alias2view[a1]
+                        a1 = 'VIEW_' + alias2view[a1]
                     if a2 in alias2view:
                         c2 = f'{a2}_{c2}'
                         a2 = 'VIEW_' + alias2view[a2]
