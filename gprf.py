@@ -12,18 +12,31 @@ import re
 from env import Env
 import config
 import random
+from net import Net
 
 import logging
 LOG = logging.getLogger(__name__)
 
 INF = 1e9
+TARGET_REPLACE_ITER = 100                       # 目标网络更新频率(固定不懂的Q网络)
+MEMORY_CAPACITY = 500                          # 记忆库容量
+BATCH_SIZE = 60   
+GET_SAMPLE = 0  # 0为随机获取sample， 1为获取最新n个sample
+REWARD_UPDATE_METHOD = 0 # 0为更新成相同的reward 1为按比例减小reward
+REWARD_UPDATE_COEF = 0.9
+GAMMA = 0.9
 
 class Agent(nn.Module):
-    def __init__(self, net, eps=0.5, device='cpu'):
+    def __init__(self, eps=0.5, device='cpu'):
         super().__init__()
-        self.net = net.to(device=device)
+        self.eval_net = Net().to(device=device)
+        self.target_net = Net().to(device = device)
+        self.learn_step_counter = 0
         self.device = device
         self.eps = eps
+        self.memory_idx = -1
+        self.memory = []
+        self.loss_func = nn.MSELoss().to(self.device)
         # if self.net.pretrained_path:
         #     self.net.load_state_dict(torch.load(self.net.pretrained_path))
         #     if len(self.net.fit_pretrained_layers) > 0:
@@ -36,6 +49,27 @@ class Agent(nn.Module):
         #                     unfreezing_p.append(n)
         #                     m.requires_grad_(True)
         #         LOG.debug(f"Training parameters: {unfreezing_p}")
+        
+    def store_transition(self,state, action, reward, next_state, is_done, next_mask):
+        if(len(self.memory) < MEMORY_CAPACITY ):
+            self.memory.append([state, action, reward, next_state, is_done, next_mask])
+            self.memory_idx += 1
+        else:
+            self.memory_idx = (self.memory_idx+1) % MEMORY_CAPACITY
+            self.memory[self.memory_idx] = [state, action, reward, next_state, is_done, next_mask]
+    
+    # 包括当前idx，往前update_count个更新成新的reward
+    def update_reward(self, reward, update_count):
+        idx = self.memory_idx
+        last_reward = reward
+        while(update_count):
+            if REWARD_UPDATE_METHOD == 0:
+                self.memory[self.idx][2] = reward
+            elif REWARD_UPDATE_METHOD == 1:
+                self.memory[self.idx][2] = last_reward * REWARD_UPDATE_COEF
+                last_reward = last_reward * REWARD_UPDATE_COEF
+            update_count -= 1
+            self.memory_idx -= 1
 
     def predict(self, inputs, mask):
         mask_dim = mask.shape
@@ -51,6 +85,42 @@ class Agent(nn.Module):
         action = np.unravel_index(action_idx, mask_dim)
         assert mask[action[0]][action[1]] == True
         return action
+
+    def learn(self):
+        if self.learn_step_counter % TARGET_REPLACE_ITER == 0:
+            self.target_net.load_state_dict(self.eval_net.state_dict())   # 将评价网络的权重参数赋给目标网络
+        self.learn_step_counter +=1                 # 目标函数的学习次数+1
+        
+        # 抽buffer中的数据学习
+        if GET_SAMPLE == 0:
+            data = self.memory.get_dataset_random(BATCH_SIZE)
+        elif GET_SAMPLE == 1:
+            data = self.memory.get_dataset_lastn(BATCH_SIZE)
+        length = len(data)
+        mask_length = data[0][5]
+        b_s = [row[0] for row in data]
+        b_a = [row[1][0] *  mask_length + row[1][1] for row in data]
+        b_r  = [row[2] for row in data]
+        b_ns = [row[3] for row in data]
+        b_d = [row[4] for row in data]
+        b_nm = [row[5] for row in data]
+        
+        
+        
+        q_eval = self.eval_net(b_s).gather(1, b_a)
+        
+        logit = self.net(b_ns)
+        q_next = torch.where(b_nm.view(length,-1).to(logit.device),
+                                   logit, torch.tensor(float("-inf")).to(logit.device)).detach()
+        
+        q_target = b_r + GAMMA * q_next.max(1)[0].view(length, 1)
+        # q_next.max(1)[0]表示只返回每一行的最大值，不返回索引(长度为32的一维张量)；.view()表示把前面所得到的一维张量变成(BATCH_SIZE, 1)的形状；最终通过公式得到目标值
+        loss = self.loss_func(q_eval, q_target)
+        # 输入32个评估值和32个目标值，使用均方损失函数
+        self.optimizer.zero_grad()                                      # 清空上一步的残余更新参数值
+        loss.backward()                                                 # 误差反向传播, 计算参数更新值
+        self.optimizer.step()                                           # 更新评估网络的所有参数
+
 
     def train_net(self, train_data, epochs, criterion, batch_size, lr, scheduler, gamma, value_loss_coef, entropy_loss_coef, weight_decay, clip_grad_norm, betas, val_data=None, val_steps=100, min_iters=1000):
         LOG.info(f"Start training: {time.ctime()}")
@@ -133,19 +203,23 @@ class GPRF():
                 batch = batches[batch_idx]
                 for ep in range(self.d['train_args']['episodes']):
                     total_reward = 0
-                    state = self.env.reset(batch)
+                    self.env.reset(batch)
+                    state = self.env.get_state()
                     while not self.env.is_complete():
                         
                         mask = self.env.get_mask()
-                        state = self.env.get_state()
+                        # state中包含三个部分，分别是全局plan状态（以树形表示），当前plan的编码（以树形表示），当前batch的编码（以向量表示）
                         action = self.agent.predict(state, mask)   
-                        cost, is_done, _= self.env.step(action) 
+                        next_state ,reward, is_done, is_complete, next_mask= self.env.step(action)
+                        self.agent.store_transition(state, action, reward, next_state, is_done, next_mask) 
                         if is_done:
+                            # 在plan的最终结果出来后更新前面的所有reward,update_count表示前面涉及到了几个join，总join数应是表数-1，出去最后一次，所以要-2
+                            update_count = len(self.env.global_plan.singlePlans[-1].alias_to_tables)-1
+                            self.agent.update_reward(reward, update_count)
+                            self.agent.learn()
                             print(f'当前训练进度 epoch:{epoch} batch_idx:{batch_idx} episode:{ep} sql_name:{self.env.sql_names[self.env.plan_idx-1]}')
                         
-                        # self.agent.store_transition(state, action, reward, next_state, done, next_mask)
-                        # self.agent.train()
-                        
+                        state = next_state
                         # if is_done:
                             
         
@@ -295,6 +369,7 @@ class TrajectoryStorage():
         for i, (node, action) in enumerate(plan._joins[::-1]):
             plan.disjoin(node)
             obs = self.env.get_status(deepcopy(plan))
+            traj.append()
             traj.append(
                 [obs, (action, self.env.get_mask(plan), i == 0, (i == 0)*reward)])
         return traj[::-1]
@@ -303,10 +378,11 @@ class TrajectoryStorage():
         self.episodes.append(self.split_trajectory(
             deepcopy(plan), final_reward))
 
-    def get_dataset(self, n=1000):
+    def get_dataset_lastn(self, n=32):
         """Get last n trajectories"""
         return self.episodes[-n:]
-    def  get_
+    def  get_dataset_random(self, n = 32):
+        
 
             
 def to_device(obj, device):

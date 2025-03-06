@@ -105,7 +105,9 @@ class Env():
             self.plan_idx += 1
             if self.plan_idx < len(self.plans):
                 self.plan = self.plans[self.plan_idx]
-        return reward, is_done, self.is_complete()
+        next_state = self.get_state()
+        next_mask = self.get_mask()
+        return next_state ,reward, is_done, self.is_complete(), next_mask
 
     def reset(self, batch):
         self.global_plan.reset()

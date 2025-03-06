@@ -65,7 +65,7 @@ def FC(d_in = 128 * 3, d_out = 256, fc_nlayers = 4, drop = 0.5):
 #         return F.log_softmax(x, dim=1)
 
 import torch
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GCNConv, SAGPooling, global_mean_pool
 from torch_geometric.utils import add_self_loops
 
@@ -92,12 +92,9 @@ class ConvGNN(nn.Module):
         self.global_pool = global_mean_pool
         self.fc = FC(d_in = hidden_dim, d_out = output_dim)
     
-    def forward(self, data):
-        x, edge_index = data.x, data.edge_index
-        batch = torch.zeros(x.shape[0], dtype = torch.long)
-        
-        # 添加自环边避免信息丢失
-        edge_index, _ = add_self_loops(edge_index)
+    def forward(self, data_list):
+        data = Batch.from_data_list(data_list)
+        x, edge_index, batch = data.x, data.edge_index, data.batch
         
         for i in range(self.num_layers):
             # 图卷积层
@@ -119,6 +116,7 @@ class LSTMNetwork(nn.Module):
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
+            batch_first=True
         )
         self.fc = nn.Linear(hidden_size, output_size)
     
