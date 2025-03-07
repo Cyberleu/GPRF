@@ -48,11 +48,15 @@ class Env():
         # 记录每个query的cost
         self.query_costs = {}
         self.view_costs = {}
-        self.net = Net(d_out = self.N_rels * self.N_rels)
+        self.eval_net = Net(d_out = self.N_rels * self.N_rels)
+        self.target_net = Net(d_out = self.N_rels * self.N_rels)
         self.plan_encoder = PlanEncoder(self)
         self.query_encoder = QueryEncoder(self)
         self.sql_names = []
-        self.tables_encode = torch.tensor((0, self.N_rels))
+        self.tables_encode = torch.zeros((0, self.N_rels))
+        # 记录batch执行的最短时间,在reset时不更新
+        self.db_data = config.env_config['db_data']
+        self.batch_cost = dict() # {(sql_name, sql_name...) : (total_cost, total_time)}
         
 
     def get_obs(self):
@@ -122,9 +126,9 @@ class Env():
         # 建立该batch的全局编码
         for plan in self.plans:
             pos = torch.zeros(self.N_rels)
-            for _, table in plan.alias_to_tables.items():
-                pos[table] = pos[table] + 1
-            torch.vstack((self.tables_encode, pos))
+            for _, table in plan.alias_to_table.items():
+                pos[self.rel_to_idx[table]] = pos[self.rel_to_idx[table]] + 1
+            self.tables_encode = torch.vstack((self.tables_encode, pos))
   
         # 删除掉上一轮所有的物化视图（只有训练中使用，实际环境下可按照算法保留上一批的物化视图）
         drop_all_materialized_views()
@@ -185,11 +189,21 @@ class Env():
     def get_state(self):
         return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
         
-    def reward(self, ):
+    def reward(self, exec_time = False):
         if not self.is_done():
             return None
         else:
-            return self.get_cost()
+            cost = self.get_cost()
+            baseline_cost = 0
+            batch_sql_names = frozenset(self.sql_names[:self.plan_idx+1])
+            # batch_cost中保存的是经验池，如果不在batch_cost中则直接按db_data中的cost之和当作baseline
+            if batch_sql_names not in self.batch_cost:
+                for sql_name in batch_sql_names:
+                    baseline_cost += self.db_data[sql_name][-1] if exec_time else self.db_data[sql_name][-2]
+            else:
+                baseline_cost = self.batch_cost[batch_sql_names][1] if exec_time else self.batch_cost[batch_sql_names][1]
+            reward = - np.log(cost/baseline_cost)
+            return reward
         
 
     def render(self):

@@ -642,11 +642,11 @@ def generate_env_config(get_cost = True, get_time = False):
         query_name = os.path.basename(each)
         cost, time = None, None
         if get_cost:
-            cost = get_cost_from_db(q)
+            cost = get_cost_from_db(q, config.conn)
         if get_time:
-            time = get_cost_from_db(q, exec_time = True, time_limit=3000000)
+            time = get_cost_from_db(q, config.conn, exec_time = True, time_limit=3000000)
         env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, cost, time]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
-generate_env_config()
+# generate_env_config(True, True)
     

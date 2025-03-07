@@ -111,7 +111,7 @@ import torch
 import torch.nn as nn
 
 class LSTMNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size = 61, output_size = 128):
         super(LSTMNetwork, self).__init__()
         self.lstm = nn.LSTM(
             input_size=input_size,
