@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, global_mean_pool, SAGPooling
 from torch_geometric.data import Batch
+import config
 
 class Net(nn.Module):
     def __init__(self, d_out):
@@ -14,14 +15,15 @@ class Net(nn.Module):
     
     def forward(self, input):
         # 分别为全局plan，当前plan，batch中所有查询的table序列
-        gp, sp, bt= input
-        if gp is None:
-            out1 = torch.zeros(self.gp_gnn.output_dim)
-        else :
-            out1 = self.gp_gnn(gp)
+        gp = [row[0] for row in input]
+        sp = [row[1] for row in input]
+        bt = torch.empty(0,input[0][2].shape[0],input[0][2].shape[1])
+        for row in input:
+            bt = torch.cat((bt, row[2].unsqueeze(0))) 
+        out1 = self.gp_gnn(gp)
         out2 = self.sp_gnn(sp)
         out3 = self.lstm(bt)
-        concat = torch.concatenate((out1.view(-1), out2.view(-1),out3.view(-1)))
+        concat = torch.concat((out1, out2, out3), dim = 1)
         out = self.fc(concat)
         return out
     
@@ -70,7 +72,7 @@ from torch_geometric.nn import GCNConv, SAGPooling, global_mean_pool
 from torch_geometric.utils import add_self_loops
 
 class ConvGNN(nn.Module):
-    def __init__(self, input_dim = 45, hidden_dim = 128, output_dim = 128, num_layers=4, init_ratio=0.8):
+    def __init__(self, input_dim = config.d['net_args']['node_shape'], hidden_dim = 128, output_dim = 128, num_layers=4, init_ratio=0.8):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -92,9 +94,25 @@ class ConvGNN(nn.Module):
         self.global_pool = global_mean_pool
         self.fc = FC(d_in = hidden_dim, d_out = output_dim)
     
+    # batch中可能有空图（如刚开始的GlobalPlan），需要单独处理。
     def forward(self, data_list):
-        data = Batch.from_data_list(data_list)
-        x, edge_index, batch = data.x, data.edge_index, data.batch
+        def add_dummy_node(data_list, num_features=config.d['net_args']['node_shape']):
+            dummy_feature = torch.zeros(1, num_features)  # 虚拟节点特征
+            for data in data_list:
+                if data.num_nodes == 0:
+                    data.x = dummy_feature  # 填充为 [1, num_features]
+                    data.edge_index = torch.empty(2, 0, dtype=torch.long)  # 保持边为空
+            return data_list
+        data_list = add_dummy_node(data_list)
+        n = len(data_list)
+        index = [False if item is None else True for item in data_list]
+        
+
+        batch = Batch.from_data_list(data_list)
+
+        
+        x, edge_index , batch = batch.x, batch.edge_index, batch.batch
+        
         
         for i in range(self.num_layers):
             # 图卷积层
@@ -105,13 +123,16 @@ class ConvGNN(nn.Module):
         
         # 全局平均池化得到图级向量
         x = self.global_pool(x, batch)
-        return self.fc(x)
+        out = torch.zeros(n, x.size(1), device=x.device)
+        out[index] = x
+    
+        return self.fc(out)
     
 import torch
 import torch.nn as nn
 
 class LSTMNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size = 61, output_size = 128):
+    def __init__(self, input_size, hidden_size = 64, output_size = 128):
         super(LSTMNetwork, self).__init__()
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -137,21 +158,26 @@ class LSTMNetwork(nn.Module):
 # 示例使用
 if __name__ == "__main__":
     # 超参数
-    batch_size = 4
-    seq_len = 10    # 节点序列长度（定长）
-    input_size = 32  # 每个节点的编码维度
-    hidden_size = 64
-    output_size = 128
+    # batch_size = 4
+    # seq_len = 10    # 节点序列长度（定长）
+    # input_size = 32  # 每个节点的编码维度
+    # hidden_size = 64
+    # output_size = 128
     
-    # 初始化模型
-    model = LSTMNetwork(input_size, hidden_size, output_size)
+    # # 初始化模型
+    # model = LSTMNetwork(input_size, hidden_size, output_size)
     
-    # 生成随机输入数据
-    x = torch.randn(seq_len, input_size)
+    # # 生成随机输入数据
+    # x = torch.randn(seq_len, input_size)
     
-    # 前向传播
-    out = model(x)
+    # # 前向传播
+    # out = model(x)
     
-    print("输入形状:", x.shape)        # 输出: torch.Size([4, 10, 32])
-    print("输出形状:", out.shape)      # 输出: torch.Size([4, 128])
+    # print("输入形状:", x.shape)        # 输出: torch.Size([4, 10, 32])
+    # print("输出形状:", out.shape)      # 输出: torch.Size([4, 128])
+    # fc = FC(d_out = 20)
+    x = torch.randn((5,3*128))
+    fc = FC(d_out = 20)
+    y = fc(x)
+    print(y.shape)
     

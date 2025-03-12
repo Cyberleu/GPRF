@@ -295,7 +295,7 @@ def db_rollback(conn):
     curs.close()
 
 
-def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False, time_limit = 5000):
+def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False, time_limit = 300000, baseline_cost = None, baseline_time = None):
     """
     DEPRECATED
     sql_query: str
@@ -315,20 +315,36 @@ def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False, time_lim
         if not is_view:
             cur.execute(f"""SET statement_timeout = {time_limit};COMMIT; """)
         cur.execute(f"""
-        EXPLAIN (FORMAT JSON{', ANALYZE' if exec_time else ''})
+        EXPLAIN (FORMAT JSON)
         {sql_query}
         """)
-        rows = cur.fetchall()
+        cost_rows = cur.fetchall()
     except Exception as e:
         cur.close()
         db_rollback(conn)
-        return -1
-    cur.close()
+        # 超时时的操作
+        return 2 * baseline_cost, 2 * baseline_time
 
-    if exec_time and not is_view:
-        return rows[0][0][0]['Plan']['Actual Total Time']
-    else:
-        return rows[0][0][0]['Plan']['Total Cost']
+
+    if exec_time:
+        try:
+            cur.execute(f"""
+            EXPLAIN (FORMAT JSON , ANALYZE)
+            {sql_query}
+            """)
+            time_rows = cur.fetchall()
+        except Exception as e:
+            cur.close()
+            db_rollback(conn)
+            return 2 * baseline_cost, 2 * baseline_time
+        
+    cur.close()
+    cost = cost_rows[0][0][0]['Plan']['Total Cost']
+    if exec_time:
+        time = time_rows[0][0][0]['Plan']['Actual Total Time']
+        return cost, time
+    return cost, None
+    
 
 
 def parse_explain_json_to_list_of_nodes(
@@ -626,7 +642,7 @@ def drop_all_materialized_views():
         print(f"操作失败: {e}")
 
 
-def generate_env_config(get_cost = True, get_time = False):
+def generate_env_config():
     env_config = config.read_json_file(config.offical_path)
     # if os.path.exists(config.env_path):
     #     env_config = config.read_json_file(config.env_path)
@@ -640,13 +656,9 @@ def generate_env_config(get_cost = True, get_time = False):
             sql_list.append(q)
         query_tables, reverse_aliases_dict, query_conditions , query_select = parse_sql_query(q)
         query_name = os.path.basename(each)
-        cost, time = None, None
-        if get_cost:
-            cost = get_cost_from_db(q, config.conn)
-        if get_time:
-            time = get_cost_from_db(q, config.conn, exec_time = True, time_limit=3000000)
-        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, cost, time]
+        cost, time = get_cost_from_db(q, config.conn, exec_time = True, time_limit=3000000)
+        env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, q,query_name,cost, time]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
-# generate_env_config(True, True)
+generate_env_config()
     

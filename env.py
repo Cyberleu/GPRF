@@ -104,7 +104,7 @@ class Env():
         is_done = self.is_done()
         if is_done:
             self.global_plan.merge(self.plan)
-        reward = self.reward()
+        reward = self.reward(exec_time = True)
         if is_done:
             self.plan_idx += 1
             if self.plan_idx < len(self.plans):
@@ -161,12 +161,13 @@ class Env():
     # 通过增量的方式获取GlobalPlan的cost,判断新加的plan是否能共享
     def get_cost(self, exec_time = False):
         root = self.global_plan.roots[-1]
+        sql_name = self.global_plan.singlePlans[-1].sql_name
         shared_nodes = self.global_plan.lookup_by_value_within_node(root, 'type', 'Share')
         if(len(shared_nodes) == 0):
             # 无法进行共享， 则直接加上该sql的cost
             query_sql = self.global_plan.generate_sql(root, False)
-            query_cost = get_cost_from_db(query_sql, self.conn, exec_time)
-            self.query_costs[root] = query_cost
+            query_cost, query_time = get_cost_from_db(query_sql, conn=self.conn, exec_time=exec_time,is_view=False, baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
+            self.query_costs[root] = query_time if exec_time else query_cost
         else:
             # 可以进行共享，考虑1. 视图已经存在，无需再生成 2. 视图不存在
             # 当生成视图时可能会对前面已经生成的query有影响，因此要重新获取cost
@@ -176,14 +177,16 @@ class Env():
                 assert len(share_list) >= 2
                 if len(share_list) == 2:
                     view_sql = self.global_plan.generate_sql(node, True)
-                    view_cost = get_cost_from_db(view_sql, self.conn, is_view = True, exec_time=True)
-                    self.view_costs[node] = view_cost
+                    view_cost, view_time = get_cost_from_db(view_sql, self.conn, is_view = True, exec_time=True)
+                    self.view_costs[node] = view_time if exec_time else view_cost
                     influcned_roots.add(share_list[0])
             influcned_roots.add(root)
             for node in list(influcned_roots):
+                index = self.global_plan.roots.index(node)
+                sql_name = self.global_plan.singlePlans[index]
                 query_sql = self.global_plan.generate_sql(node, False)
-                query_cost = get_cost_from_db(query_sql, self.conn, exec_time = exec_time)
-                self.query_costs[query_sql] = query_cost
+                query_cost = get_cost_from_db(query_sql, self.conn, exec_time = exec_time,baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
+                self.query_costs[query_sql] = query_time if exec_time else query_cost
         return sum(list(self.view_costs.values())) + sum(list(self.query_costs.values()))
     
     def get_state(self):
@@ -193,7 +196,7 @@ class Env():
         if not self.is_done():
             return None
         else:
-            cost = self.get_cost()
+            cost = self.get_cost(exec_time=exec_time)
             baseline_cost = 0
             batch_sql_names = frozenset(self.sql_names[:self.plan_idx+1])
             # batch_cost中保存的是经验池，如果不在batch_cost中则直接按db_data中的cost之和当作baseline
@@ -201,7 +204,7 @@ class Env():
                 for sql_name in batch_sql_names:
                     baseline_cost += self.db_data[sql_name][-1] if exec_time else self.db_data[sql_name][-2]
             else:
-                baseline_cost = self.batch_cost[batch_sql_names][1] if exec_time else self.batch_cost[batch_sql_names][1]
+                baseline_cost = self.batch_cost[batch_sql_names][1] if exec_time else self.batch_cost[batch_sql_names][0]
             reward = - np.log(cost/baseline_cost)
             return reward
         
@@ -216,17 +219,20 @@ class Env():
 class PlanEncoder():
     def __init__(self, env):
         self.env = env
-    
+        self.node_shape = config.d['net_args']['node_shape']
     # 返回矩阵和边信息，不是一个向量
     def encode(self, plan):
         
         if len(plan.roots) == 0:
-            return None
+            x = torch.empty(0,self.node_shape,dtype=torch.float32)
+            edge_index = torch.empty(2, 0, dtype=torch.long)
+            return Data(x=x, edge_index=edge_index)
+            
         plan = self.node_encode(plan)
         # 获取所有节点并排序，确保顺序一致
         nodes = list(plan.G.nodes())
         node_idx = {node: idx for idx, node in enumerate(nodes)}
-        node_vecs = np.zeros((0, list(plan.G.nodes.values())[0]['feature'].shape[0]))
+        node_vecs = np.zeros((0, self.node_shape))
         for node_index in nodes:
             node_vecs = np.vstack((node_vecs, plan.G.nodes[node_index]['feature'].reshape(1,-1)))
         

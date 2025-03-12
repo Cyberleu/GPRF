@@ -19,7 +19,7 @@ LOG = logging.getLogger(__name__)
 
 
 class SinglePlan():
-    def __init__(self, query_tables=None, alias_to_table=None, query_join_conditions=None, query_select = None, initial_query=None, *args):
+    def __init__(self, query_tables=None, alias_to_table=None, query_join_conditions=None, query_select = None, initial_query=None,sql_name = None,  baseline_cost = None, baseline_time = None,*args):
         self.query_tables = query_tables if query_tables else []
         self.alias_to_table = dict(
             sorted(alias_to_table.items())) if alias_to_table else {}
@@ -43,6 +43,9 @@ class SinglePlan():
             self.G.nodes[node_idx].update({'conds':conditions})
             
         self.roots = set(self.G.nodes)
+        self.sql_name = sql_name
+        self.baseline_cost = baseline_cost
+        self.baseline_time = baseline_time
         self.initial_query = initial_query
         self._joins = []
         self.sub_alias_tabls = []
