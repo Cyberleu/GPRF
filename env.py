@@ -111,7 +111,8 @@ class Env():
                 self.plan = self.plans[self.plan_idx]
         next_state = self.get_state()
         next_mask = self.get_mask()
-        return next_state ,reward, is_done, self.is_complete(), next_mask
+        
+        return next_state ,reward, is_done, next_mask, self.is_complete()
 
     def reset(self, batch):
         self.global_plan.reset()
@@ -124,6 +125,7 @@ class Env():
         self.current_step = 0
         self.plan = self.plans[0]
         # 建立该batch的全局编码
+        self.tables_encode = torch.zeros((0, self.N_rels))
         for plan in self.plans:
             pos = torch.zeros(self.N_rels)
             for _, table in plan.alias_to_table.items():
@@ -143,6 +145,8 @@ class Env():
                     join_list = self.plan.get_joinable_list(n1, n2)
                     for join in join_list:  
                         m[self.rel_to_idx[join[0]]][self.rel_to_idx[join[1]]] = 1
+        if not m.any():
+            print(1)
         return m
                            
     # def get_mask(self):

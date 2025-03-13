@@ -152,6 +152,10 @@ def _parse_single_query_condition2(qc):
         'lte': '<=',
         'neq': '!='
     }
+    in_ops = {
+        'in':'IN',
+        'nin':'NOT IN'
+    }
     like_ops = {
         'not_like': 'NOT LIKE',
         'like': 'LIKE'
@@ -193,11 +197,11 @@ def _parse_single_query_condition2(qc):
         else:
             return None
 
-    elif k == 'in':
+    elif k in in_ops:
         names = [v[0].split('.')[0]]
         cond['entry_name'] = v[0].split('.')[0]
         cond['col'] = v[0].split('.')[1]
-        cond['op'] = k
+        cond['op'] = in_ops[k]
         if isinstance(v[1]['literal'], str):
             cond['pred'] = v[1]['literal']
         else:
@@ -217,6 +221,8 @@ def _parse_single_query_condition2(qc):
         cond["op"] = 'IS'
         cond["pred"] = exists_ops[k][3:]
     elif k in ['or', 'and']:
+        # 展示还处理不了这个
+        return -1
         names = []
         cond = []
         for _v in v:
@@ -265,6 +271,8 @@ def _get_query_condition(qc,flag):
                 single_cond = _parse_single_query_condition(qc)
             elif(flag == 2):
                 single_cond = _parse_single_query_condition2(qc)
+                if(single_cond == -1):
+                    return
             conditions.append(single_cond)
         else:
             raise Exception(
@@ -660,5 +668,12 @@ def generate_env_config():
         env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, q,query_name,cost, time]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
-generate_env_config()
+# generate_env_config()
+# if __name__ == '__main__':
+#     job_train_path = config.d['sys_args']['job_train_path']
+#     x_train = glob.glob(job_train_path + "13.sql")
+#     for each in x_train:
+#         with open(each, 'r') as file:
+#             q = file.read()
+#             query_tables, reverse_aliases_dict, query_conditions , query_select = parse_sql_query(q)
     

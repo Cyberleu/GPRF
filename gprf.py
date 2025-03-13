@@ -20,7 +20,7 @@ LOG = logging.getLogger(__name__)
 INF = 1e9
 TARGET_REPLACE_ITER = 5                       # 目标网络更新频率(固定不懂的Q网络)
 MEMORY_CAPACITY = 500                          # 记忆库容量
-BATCH_SIZE = 60   
+BATCH_SIZE = 32   
 GET_SAMPLE = 0  # 0为随机获取sample， 1为获取最新n个sample
 REWARD_UPDATE_METHOD = 0 # 0为更新成相同的reward 1为按比例减小reward
 REWARD_UPDATE_COEF = 0.9
@@ -79,15 +79,24 @@ class Agent(nn.Module):
             data = self.ts.get_dataset_lastn(BATCH_SIZE)
         length = len(data)
         mask_length = data[0][5].shape[0]
+        # batch state
         b_s = [row[0] for row in data]
+        # batch action
         b_a = [[row[1][0] *  mask_length + row[1][1]] for row in data]
+        # batch reward
         b_r  = [row[2] for row in data]
         b_r = torch.tensor(b_r, dtype=torch.float32)
+        # batch next state
         b_ns = [row[3] for row in data]
         b_d = [row[4] for row in data]
+        # batch next mask
         b_nm = torch.empty((0,mask_length, mask_length), dtype=bool)
         for row in data:
             b_nm = torch.concat((b_nm, row[5].unsqueeze(0)))
+        # batch complete mask
+        b_cm = torch.empty(0, dtype=bool)
+        for row in data:
+            b_cm = torch.concat((b_cm, torch.tensor([row[6]], dtype = bool)))
         
         
         q_eval = self.eval_net(b_s).gather(1, torch.tensor(b_a)).view(-1)
@@ -95,8 +104,11 @@ class Agent(nn.Module):
         logit = self.target_net(b_ns)
         q_next = torch.where(b_nm.view(length,-1).to(logit.device),
                                    logit, torch.tensor(float("-inf")).to(logit.device)).detach()
-        
-        q_target = b_r + GAMMA * q_next.max(1)[0]
+        q_target_temp = b_r+GAMMA * q_next.max(1)[0]
+        # 处理is_complete的情况，防止出现全是-inf的情况
+        q_target = torch.where(b_cm,
+                          b_r, q_target_temp)
+        # q_target = b_r + GAMMA * q_next.max(1)[0]
         # q_next.max(1)[0]表示只返回每一行的最大值，不返回索引(长度为32的一维张量)；.view()表示把前面所得到的一维张量变成(BATCH_SIZE, 1)的形状；最终通过公式得到目标值
         loss = self.loss_func(q_eval, q_target)
         # 输入32个评估值和32个目标值，使用均方损失函数
@@ -152,13 +164,13 @@ class TrajectoryStorage():
     def set_env(self, env):
         self.env = env
 
-    def store_transition(self,state, action, reward, next_state, is_done, next_mask):
+    def store_transition(self,state, action, reward, next_state, is_done, next_mask, is_complete):
         if(len(self.memory) < MEMORY_CAPACITY ):
-            self.memory.append([state, action, reward, next_state, is_done, next_mask])
+            self.memory.append([state, action, reward, next_state, is_done, next_mask, is_complete])
             self.memory_idx += 1
         else:
             self.memory_idx = (self.memory_idx+1) % MEMORY_CAPACITY
-            self.memory[self.memory_idx] = [state, action, reward, next_state, is_done, next_mask]
+            self.memory[self.memory_idx] = [state, action, reward, next_state, is_done, next_mask, is_complete]
 
     # 包括当前idx，往前update_count个更新成新的reward
     def update_reward(self, reward, update_count):
@@ -240,8 +252,8 @@ class GPRF():
                         mask = self.env.get_mask()
                         # state中包含三个部分，分别是全局plan状态（以树形表示），当前plan的编码（以树形表示），当前batch的编码（以向量表示）
                         action = self.agent.predict(state, mask)   
-                        next_state ,reward, is_done, is_complete, next_mask= self.env.step(action)
-                        self.agent.ts.store_transition(state, action, reward, next_state, is_done, next_mask) 
+                        next_state ,reward, is_done,  next_mask, is_complete,= self.env.step(action)
+                        self.agent.ts.store_transition(state, action, reward, next_state, is_done, next_mask, is_complete) 
                         if is_done:
                             # 在plan的最终结果出来后更新前面的所有reward,update_count表示前面涉及到了几个join，总join数应是表数-1，出去最后一次，所以要-2
                             update_count = len(self.env.global_plan.singlePlans[-1].alias_to_table)-1
