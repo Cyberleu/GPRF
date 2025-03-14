@@ -103,7 +103,7 @@ class Env():
         im.save(f'/data/homedata/lch/GPRF/im.png') 
         is_done = self.is_done()
         if is_done:
-            self.global_plan.merge(self.plan)
+            self.global_plan.merge(deepcopy(self.plan))
         reward = self.reward(exec_time = True)
         if is_done:
             self.plan_idx += 1
@@ -166,9 +166,13 @@ class Env():
     def get_cost(self, exec_time = False):
         root = self.global_plan.roots[-1]
         sql_name = self.global_plan.singlePlans[-1].sql_name
-        shared_nodes = self.global_plan.lookup_by_value_within_node(root, 'type', 'Share')
+        shared_nodes = []
+        # 因为已经merge，所以只需要获取所有包含该root的share_list即可。
+        for node, node_data in self.global_plan.G.nodes.items():
+            if node_data['type'] == 'Share' and root in node_data['share_list']:
+                shared_nodes.append(node)
         if(len(shared_nodes) == 0):
-            # 无法进行共享， 则直接加上该sql的cost
+            # 无共享节点， 则直接加上该sql的cost
             query_sql = self.global_plan.generate_sql(root, False)
             query_cost, query_time = get_cost_from_db(query_sql, conn=self.conn, exec_time=exec_time,is_view=False, baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
             self.query_costs[root] = query_time if exec_time else query_cost
@@ -187,9 +191,9 @@ class Env():
             influcned_roots.add(root)
             for node in list(influcned_roots):
                 index = self.global_plan.roots.index(node)
-                sql_name = self.global_plan.singlePlans[index]
+                sql_name = self.global_plan.singlePlans[index].sql_name
                 query_sql = self.global_plan.generate_sql(node, False)
-                query_cost = get_cost_from_db(query_sql, self.conn, exec_time = exec_time,baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
+                query_cost, query_time = get_cost_from_db(query_sql, self.conn, exec_time = exec_time,baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
                 self.query_costs[query_sql] = query_time if exec_time else query_cost
         return sum(list(self.view_costs.values())) + sum(list(self.query_costs.values()))
     

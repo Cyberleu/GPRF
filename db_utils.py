@@ -211,7 +211,7 @@ def _parse_single_query_condition2(qc):
         names = [v[0].split('.')[0]]
         cond['entry_name'] = v[0].split('.')[0]
         cond["col"] = v[0].split('.')[1]
-        cond["op"] = k
+        cond["op"] = like_ops[k]
         cond["pred"] = f'\'{v[1]["literal"]}\''
     elif k in exists_ops.keys():
         v = [v]

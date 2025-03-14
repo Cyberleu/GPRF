@@ -481,7 +481,7 @@ def generate_sql(plan):
 # 一个globalplan由若干个singlePlan组成，singlePlan之间可以用Share算子连接
 # node中包含的属性：1. type(scan, join, share) 2. table_entries, 孩子中包含的所有表，用于Share算子的替换
 # 3. conds , scan算子存储形式为：[{"col":"...", "op":"...", "pred":"..."},{""},..]， join/share算子为[{"left_entry_name":"...", "right_entry_name":"...", "left_col_name":"...", "right_col_name":"..."}]
-# 连接默认为等值连接，因此不需要记录op 4. share_list, 记录此share算子被哪些plan shared 5. select_cols, 对于Share算子需要select出其他使用该Share算子的列，形式为set(('alias','col'))
+# 连接默认为等值连接，因此不需要记录op 4. share_list, 记录此share算子被哪些plan shared,值为plan_idx 5. select_cols, 对于Share算子需要select出其他使用该Share算子的列，形式为set(('alias','col'))
 # 6. conds_dict, 在后续sql构造环节，每个原始查询需要知道在Share节点中涉及到哪些谓词，{plan_idx:conds}
 class GlobalPlan:
     def __init__(self):
@@ -501,40 +501,63 @@ class GlobalPlan:
             self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
             self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
             return
-        node1, node2 = self.find_shared_op(plan.G)
-        if(node1 == -1):
+        node1s, node2s = self.find_shared_op(plan.G)
+        press = []
+        if(len(node1s) == 0):
             # 无法Share，直接加入G, 新加入的plan以‘Plan(index)-’区分
             self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
             self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
         else:
             # 合并table上的谓词，join上的不用管
-            self.merge_cond(plan.G, node1, node2, plan_idx)
-            self.merge_select(plan, node1, node2)
-            self.G.nodes[node1]["type"] = "Share"
-            pres = list(plan.G.predecessors(node2))
-            self.G.nodes[node1]["share_list"].append(get_root(self.G, node1))
-            # 本身即为根节点
-            if(len(pres) == 0):
-                self.roots.append(node1)
-            else:
-                # 删除-合并-连接
-                succs = list(plan.G.successors(node2))
-                succs.append(node2)
-                plan.G.remove_nodes_from(succs)
-                self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
-                self.G.add_edge(f'{plan_idx}_{pres[0]}', node1)
-                self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
-            self.G.nodes[node1]["share_list"].append(self.roots[-1])
+            for i in range(len(node1s)):
+                node1 = node1s[i]
+                node2 = node2s[i]
+                self.merge_cond(plan.G, node1, node2, plan_idx)
+                self.merge_select(plan, node1, node2)
+                self.G.nodes[node1]["type"] = "Share"
+                pres = list(plan.G.predecessors(node2))
+                press.append(pres)
+                # 首次添加share，需要把原来的plan_idx也加上
+                if len(self.G.nodes[node1]["share_list"]) == 0:
+                    node1_root = get_root(self.G, node1)
+                    # TODO: bug：node1_root不在self.roots中
+                    node1_plan_index = self.roots.index(node1_root)
+                    self.G.nodes[node1]["share_list"].append(node1_plan_index)
+                # 本身即为根节点
+                if(len(pres) == 0):
+                    self.roots.append(node1)
+                    self.G.nodes[node1]["share_list"].append(plan_idx)
+                    return
+                else:
+                    # 删除
+                    succs = list(plan.G.successors(node2))
+                    succs.append(node2)
+                    plan.G.remove_nodes_from(succs)
+                    self.G.nodes[node1]["share_list"].append(plan_idx)
+            # 合并self.G.nodes[node1]["share_list"].append(len(self.roots)-1)
+            self.G = nx.union(self.G, plan.G, rename = ('', f'{plan_idx}_'))
+            # 连接
+            for i in range(len(node1s)):
+                self.G.add_edge(f'{plan_idx}_{press[i][0]}', node1s[i])
+            self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
 
-    # 对于子树覆盖相同表的节点可视为Share算子
+    # 对于子树覆盖相同表的节点可视为Share算子,可能由多个相互不重叠的share算子
     def find_shared_op(self, g2):
         # 越靠后连接的编号越大， 我们要找的是尽可能覆盖多表的
+        excluded = []
+        node1 = []
+        node2 = []
         for i in range(g2.number_of_nodes()-1,-1,-1):
+            if i in excluded:
+                continue
             other_table_entries = g2.nodes[i]["table_entries"]
             for node, node_data in self.G.nodes.items():
                 if(node_data["table_entries"] == other_table_entries and len(other_table_entries) >= config.d['sys_args']['mv_min_size']):
-                    return node, i
-        return -1, -1
+                    # node的所有后续节点全部放入excluded,防止出现重叠的视图
+                    excluded.extend(list(nx.descendants(g2, i)))
+                    node1.append(node)
+                    node2.append(i)
+        return node1, node2
     
     # 将merged_node中的select列合并到shared_node中,其中shared_node一定是在GlobalPlan中的
     def merge_select_helper(self, query_select, merged_plan,shared_node, merged_node):
@@ -594,6 +617,7 @@ class GlobalPlan:
                 if(node_data["type"] == "Scan" and len(node_data['conds']) > 0):
                     conds.extend(node_data['conds'])
             self.G.nodes[node1]['conds_dict'][plan_idx1] = conds
+                  
     
     # 在指定node的子树中查找key的value为target的node
     def lookup_by_value_within_node(self, node_index, key, target):

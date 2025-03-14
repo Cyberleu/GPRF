@@ -242,7 +242,8 @@ class GPRF():
         # 模拟实际情况，sql按批到来
             batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
             for batch_idx in range(len(batches)):
-                batch = batches[batch_idx]
+                batch = ['29.sql', '12.sql', '25.sql', '40.sql', '21.sql', '16.sql', '18.sql', '37.sql', '4.sql', '33.sql', '46.sql', '9.sql', '26.sql', '27.sql', '15.sql', '3.sql', '30.sql', '48.sql', '44.sql']
+                # batch = batches[batch_idx]
                 for ep in range(self.d['train_args']['episodes']):
                     total_reward = 0
                     self.env.reset(batch)
