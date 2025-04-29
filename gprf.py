@@ -16,19 +16,26 @@ from net import Net
 
 import logging
 LOG = logging.getLogger(__name__)
+logging.basicConfig(
+    filename='reward.log',    # 日志文件名
+    filemode='w',          # 文件模式：'a'为追加（默认），'w'为覆盖
+    level=logging.INFO,   # 最低日志级别（DEBUG及以上均记录）
+    format='%(asctime)s - %(levelname)s - %(message)s',  # 自定义格式
+    datefmt='%Y-%m-%d %H:%M:%S'  # 时间格式
+)
 
 INF = 1e9
-TARGET_REPLACE_ITER = 5                       # 目标网络更新频率(固定不懂的Q网络)
+TARGET_REPLACE_ITER = 1                       # 目标网络更新频率(固定不懂的Q网络)
 MEMORY_CAPACITY = 500                          # 记忆库容量
-BATCH_SIZE = 32   
-GET_SAMPLE = 0  # 0为随机获取sample， 1为获取最新n个sample
+BATCH_SIZE = 8   
+GET_SAMPLE = 1  # 0为随机获取sample， 1为获取最新n个sample
 REWARD_UPDATE_METHOD = 0 # 0为更新成相同的reward 1为按比例减小reward
-REWARD_UPDATE_COEF = 0.9
+REWARD_UPDATE_COEF = 1
 GAMMA = 0.9
 LR = 0.01
 
 class Agent(nn.Module):
-    def __init__(self, eval_net, target_net, eps=0.5, device='cpu'):
+    def __init__(self, eval_net, target_net, eps=0, device='cpu'):
         super().__init__()
         self.eval_net = eval_net
         self.target_net = target_net
@@ -242,8 +249,7 @@ class GPRF():
         # 模拟实际情况，sql按批到来
             batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
             for batch_idx in range(len(batches)):
-                batch = ['29.sql', '12.sql', '25.sql', '40.sql', '21.sql', '16.sql', '18.sql', '37.sql', '4.sql', '33.sql', '46.sql', '9.sql', '26.sql', '27.sql', '15.sql', '3.sql', '30.sql', '48.sql', '44.sql']
-                # batch = batches[batch_idx]
+                batch = batches[batch_idx]
                 for ep in range(self.d['train_args']['episodes']):
                     total_reward = 0
                     self.env.reset(batch)
@@ -253,16 +259,31 @@ class GPRF():
                         mask = self.env.get_mask()
                         # state中包含三个部分，分别是全局plan状态（以树形表示），当前plan的编码（以树形表示），当前batch的编码（以向量表示）
                         action = self.agent.predict(state, mask)   
-                        next_state ,reward, is_done,  next_mask, is_complete,= self.env.step(action)
+                        next_state ,reward, is_done,  next_mask, is_complete, new_sql= self.env.step(action)
                         self.agent.ts.store_transition(state, action, reward, next_state, is_done, next_mask, is_complete) 
+                        total_reward += reward
                         if is_done:
                             # 在plan的最终结果出来后更新前面的所有reward,update_count表示前面涉及到了几个join，总join数应是表数-1，出去最后一次，所以要-2
-                            update_count = len(self.env.global_plan.singlePlans[-1].alias_to_table)-1
-                            self.agent.ts.update_reward(reward, update_count)
+                            # update_count = len(self.env.global_plan.singlePlans[-1].alias_to_table)-1
+                            # self.agent.ts.update_reward(reward, update_count)
                             self.agent.learn()
                             print(f'当前训练进度 epoch:{epoch} batch_idx:{batch_idx} episode:{ep} sql_name:{self.env.sql_names[self.env.plan_idx-1]}')
+
+                            ## mod by dhp
+                            sql_name = self.env.sql_names[self.env.plan_idx-1]
+                            safe_sql_name = re.sub(r'[\/:*?"<>|]', '_', sql_name)  # 替换非法文件名字符
+                            # 目标目录
+                            output_dir = "./output4dhp1"
+                            os.makedirs(output_dir, exist_ok=True)  # 自动创建目录
+                            # 目标文件路径
+                            file_path = os.path.join(output_dir, f"{safe_sql_name}.txt")
+                            with open(file_path, "a", encoding="utf-8") as f:  # "a" 表示追加模式
+                                f.write(new_sql + "\n")  # 多个 SQL 之间留空行
                         
                         state = next_state
+                        if is_complete:
+                            logging.info(f'epoch:{epoch} batch_idx:{batch_idx} episode:{ep} total_reward:{total_reward} final_reward:{reward}')
+                        
                         # if is_done:
         
 

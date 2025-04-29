@@ -18,6 +18,7 @@ DB_SETTINGS = """BEGIN;
                 SET enable_nestloop = off;
                 SET join_collapse_limit=20;
                 SET from_collapse_limit=20;
+                load 'pg_hint_plan';
                 COMMIT;
                 """
 # SET statement_timeout = 5000;
@@ -30,6 +31,15 @@ def build_and_save_optimizer_plan(sql_path):
     conn = config.conn
     with open(sql_path, 'r') as file:
         q = file.read()
+    query_tables, reverse_aliases_dict, query_conditions, parsed_select = parse_sql_query(q)
+    print(q)
+    p = SinglePlan(query_tables, reverse_aliases_dict, query_conditions,parsed_select, q)
+    plan, _ = explain_plan_parser(
+        p, p.initial_query, conn, exec_time=False)
+    return plan
+
+def build_and_save_optimizer_plan2(q):
+    conn = config.conn
     query_tables, reverse_aliases_dict, query_conditions, parsed_select = parse_sql_query(q)
     print(q)
     p = SinglePlan(query_tables, reverse_aliases_dict, query_conditions,parsed_select, q)
@@ -644,6 +654,39 @@ def drop_all_materialized_views():
         for cmd in drop_commands:
             cursor.execute(cmd)
         # 提交事务
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"操作失败: {e}")
+        
+def drop_all_views():
+    try:
+        # 连接数据库
+        conn = config.conn
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_type = 'VIEW' 
+              AND table_schema = 'public';
+        """)
+        views = cursor.fetchall()
+
+        if not views:
+            print("数据库中没有可删除的视图")
+            return
+
+        # 生成批量删除语句（使用 CASCADE 处理依赖关系）
+        drop_commands = [
+            sql.SQL("DROP VIEW IF EXISTS {view_name} CASCADE").format(
+                view_name=sql.Identifier(view[0])
+            ) for view in views
+        ]
+
+        # 执行删除操作
+        for cmd in drop_commands:
+            cursor.execute(cmd)
+            # 提交事务
         conn.commit()
     except Exception as e:
         conn.rollback()

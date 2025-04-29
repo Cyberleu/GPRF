@@ -15,6 +15,7 @@ import torch
 from torch_geometric.data import Data
 import sys
 import config
+import random
 
 sys.setrecursionlimit(10000)
 class Env():
@@ -93,6 +94,25 @@ class Env():
     # 总体是否完成
     def is_complete(self):
         return self.plan_idx == len(self.plans)
+    
+    def step2(self, action):
+        self.current_step += 1
+        table1, table2 = self.rels[action[0]], self.rels[action[1]]
+        node1, node2 = self.plan.action_to_join((table1, table2))
+        self.plan.join(node1, node2)
+        im = self.plan.render()
+        im.save(f'/data/homedata/lch/GPRF/im.png') 
+        is_done = self.is_done()
+        if is_done:
+            self.global_plan.merge(deepcopy(self.plan))
+        reward = random.randint(-100, 100)
+        if is_done:
+            self.plan_idx += 1
+            if self.plan_idx < len(self.plans):
+                self.plan = self.plans[self.plan_idx]
+        next_state = self.get_state()
+        next_mask = self.get_mask()
+        return next_state ,reward, is_done, next_mask, self.is_complete()
 
     def step(self, action):
         self.current_step += 1
@@ -104,15 +124,16 @@ class Env():
         is_done = self.is_done()
         if is_done:
             self.global_plan.merge(deepcopy(self.plan))
-        reward = self.reward(exec_time = True)
+        reward, new_sql = self.reward(exec_time = False)
         if is_done:
             self.plan_idx += 1
             if self.plan_idx < len(self.plans):
                 self.plan = self.plans[self.plan_idx]
         next_state = self.get_state()
         next_mask = self.get_mask()
-        
-        return next_state ,reward, is_done, next_mask, self.is_complete()
+        if(reward > 0):
+            reward = reward *5
+        return next_state ,reward, is_done, next_mask, self.is_complete(), new_sql
 
     def reset(self, batch):
         self.global_plan.reset()
@@ -134,6 +155,7 @@ class Env():
   
         # 删除掉上一轮所有的物化视图（只有训练中使用，实际环境下可按照算法保留上一批的物化视图）
         drop_all_materialized_views()
+        drop_all_views()
     
     # mask的shape是N_rels*N_rels,只当前状态下哪两个表之间可以连接就为1
     def get_mask(self):
@@ -195,16 +217,20 @@ class Env():
                 query_sql = self.global_plan.generate_sql(node, False)
                 query_cost, query_time = get_cost_from_db(query_sql, self.conn, exec_time = exec_time,baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
                 self.query_costs[query_sql] = query_time if exec_time else query_cost
-        return sum(list(self.view_costs.values())) + sum(list(self.query_costs.values()))
+        # TODO:sum(list(self.view_costs.values())) 
+        return sum(list(self.query_costs.values())), query_sql
+    
+    # def get_tables_encode(self):
+        
     
     def get_state(self):
         return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
         
     def reward(self, exec_time = False):
         if not self.is_done():
-            return None
+            return 0,""
         else:
-            cost = self.get_cost(exec_time=exec_time)
+            cost, new_sql = self.get_cost(exec_time=exec_time)
             baseline_cost = 0
             batch_sql_names = frozenset(self.sql_names[:self.plan_idx+1])
             # batch_cost中保存的是经验池，如果不在batch_cost中则直接按db_data中的cost之和当作baseline
@@ -214,7 +240,7 @@ class Env():
             else:
                 baseline_cost = self.batch_cost[batch_sql_names][1] if exec_time else self.batch_cost[batch_sql_names][0]
             reward = - np.log(cost/baseline_cost)
-            return reward
+            return reward, new_sql
         
 
     def render(self):
