@@ -2,15 +2,21 @@ sys_args:
   job_train_path: /data/homedata/lch/GPRF/data/train_data_small/
   job_test_path: /data/homedata/lch/GPRF/data/test_data/
   baseline_path: /data/homedata/lch/GPRF/data/baseline.json
-  job_plan_img_path: /data/homedata/lch/GPRF/
-  sql_batch_size: 5
-  mv_min_size: 3
+  job_plan_img_path: /data/homedata/lch/GPRF/img/
+  result_path: /data/homedata/lch/GPRF/result/
+  sql_batch_size: 20
+  mv_min_size: 2
 db_args:
   host: localhost
   port: 5432
   user: postgres
   password: postgres
   db: imdb 
+  time_limit: 5
 net_args:
+  node_shape: 45
 train_args:
-  episodes: 100
+  # 不同random batch的训练轮数
+  epochs : 1
+  # 一个batch的训练轮数
+  episodes: 200

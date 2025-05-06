@@ -100,8 +100,6 @@ class Env():
         table1, table2 = self.rels[action[0]], self.rels[action[1]]
         node1, node2 = self.plan.action_to_join((table1, table2))
         self.plan.join(node1, node2)
-        im = self.plan.render()
-        im.save(f'/data/homedata/lch/GPRF/im.png') 
         is_done = self.is_done()
         if is_done:
             self.global_plan.merge(deepcopy(self.plan))
@@ -119,21 +117,20 @@ class Env():
         table1, table2 = self.rels[action[0]], self.rels[action[1]]
         node1, node2 = self.plan.action_to_join((table1, table2))
         self.plan.join(node1, node2)
-        im = self.plan.render()
-        im.save(f'/data/homedata/lch/GPRF/im.png') 
         is_done = self.is_done()
         if is_done:
             self.global_plan.merge(deepcopy(self.plan))
-        reward, new_sql = self.reward(exec_time = False)
+        # reward = self.reward(exec_time = False)
+        reward = self.reward_subtree()
         if is_done:
             self.plan_idx += 1
             if self.plan_idx < len(self.plans):
                 self.plan = self.plans[self.plan_idx]
         next_state = self.get_state()
         next_mask = self.get_mask()
-        if(reward > 0):
-            reward = reward *5
-        return next_state ,reward, is_done, next_mask, self.is_complete(), new_sql
+        # if(reward > 0):
+        #     reward = reward *5
+        return next_state ,reward, is_done, next_mask, self.is_complete()
 
     def reset(self, batch):
         self.global_plan.reset()
@@ -221,14 +218,18 @@ class Env():
         return sum(list(self.query_costs.values())), query_sql
     
     # def get_tables_encode(self):
-        
+
+    # 返回新增的plan带来的新增子树中的table数量
+    def get_subtree_delta(self):
+        root = self.global_plan.roots[-1]
+        return self.global_plan.get_shared_node_entry_num(root)
     
     def get_state(self):
         return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
         
     def reward(self, exec_time = False):
         if not self.is_done():
-            return 0,""
+            return 0
         else:
             cost, new_sql = self.get_cost(exec_time=exec_time)
             baseline_cost = 0
@@ -241,6 +242,16 @@ class Env():
                 baseline_cost = self.batch_cost[batch_sql_names][1] if exec_time else self.batch_cost[batch_sql_names][0]
             reward = - np.log(cost/baseline_cost)
             return reward, new_sql
+    
+    # 该reward只考虑公共子树的数量和子树的大小
+    def reward_subtree(self):
+        if not self.is_done():
+            return 0
+        count = self.get_subtree_delta()
+        if count == 0:
+            return -5
+        else:
+            return count
         
 
     def render(self):

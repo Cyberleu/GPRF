@@ -13,6 +13,8 @@ from env import Env
 import config
 import random
 from net import Net
+import matplotlib.pyplot as plt
+import numpy as np
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -250,6 +252,7 @@ class GPRF():
             batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
             for batch_idx in range(len(batches)):
                 batch = batches[batch_idx]
+                rewards = []
                 for ep in range(self.d['train_args']['episodes']):
                     total_reward = 0
                     self.env.reset(batch)
@@ -259,7 +262,7 @@ class GPRF():
                         mask = self.env.get_mask()
                         # state中包含三个部分，分别是全局plan状态（以树形表示），当前plan的编码（以树形表示），当前batch的编码（以向量表示）
                         action = self.agent.predict(state, mask)   
-                        next_state ,reward, is_done,  next_mask, is_complete, new_sql= self.env.step(action)
+                        next_state ,reward, is_done,  next_mask, is_complete= self.env.step(action)
                         self.agent.ts.store_transition(state, action, reward, next_state, is_done, next_mask, is_complete) 
                         total_reward += reward
                         if is_done:
@@ -269,22 +272,35 @@ class GPRF():
                             self.agent.learn()
                             print(f'当前训练进度 epoch:{epoch} batch_idx:{batch_idx} episode:{ep} sql_name:{self.env.sql_names[self.env.plan_idx-1]}')
 
-                            ## mod by dhp
-                            sql_name = self.env.sql_names[self.env.plan_idx-1]
-                            safe_sql_name = re.sub(r'[\/:*?"<>|]', '_', sql_name)  # 替换非法文件名字符
-                            # 目标目录
-                            output_dir = "./output4dhp1"
-                            os.makedirs(output_dir, exist_ok=True)  # 自动创建目录
-                            # 目标文件路径
-                            file_path = os.path.join(output_dir, f"{safe_sql_name}.txt")
-                            with open(file_path, "a", encoding="utf-8") as f:  # "a" 表示追加模式
-                                f.write(new_sql + "\n")  # 多个 SQL 之间留空行
+                            # ## mod by dhp
+                            # sql_name = self.env.sql_names[self.env.plan_idx-1]
+                            # safe_sql_name = re.sub(r'[\/:*?"<>|]', '_', sql_name)  # 替换非法文件名字符
+                            # # 目标目录
+                            # output_dir = "./output4dhp1"
+                            # os.makedirs(output_dir, exist_ok=True)  # 自动创建目录
+                            # # 目标文件路径
+                            # file_path = os.path.join(output_dir, f"{safe_sql_name}.txt")
+                            # with open(file_path, "a", encoding="utf-8") as f:  # "a" 表示追加模式
+                            #     f.write(new_sql + "\n")  # 多个 SQL 之间留空行
                         
                         state = next_state
                         if is_complete:
                             logging.info(f'epoch:{epoch} batch_idx:{batch_idx} episode:{ep} total_reward:{total_reward} final_reward:{reward}')
-                        
-                        # if is_done:
+                            rewards.append(total_reward)
+                x = np.linspace(0,self.d['train_args']['episodes'] ,1)  # X轴数据（0-10，100个点）
+                y = np.array(rewards)                # Y轴数据（正弦曲线）
+
+                # 创建画布
+                plt.figure(figsize=(10, 6))  # 设置画布尺寸（宽10英寸，高6英寸）
+
+                # 绘制折线
+                plt.plot(x, y, 
+                        color='#1f77b4',   # 线条颜色（十六进制）
+                        linestyle='-',     # 实线
+                        linewidth=2,       # 线宽
+                        label='正弦曲线')   # 图例标签 
+                plt.savefig('reward.png')
+
         
 
             

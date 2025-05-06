@@ -63,7 +63,7 @@ if __name__ == '__main__':
     if(INIT):
         conn = config.conn
         # 获取原始sql的基准信息
-        for sql in sql_list:
+        for q in sql_list:
             query_tables, reverse_aliases_dict, query_conditions, query_select = parse_sql_query(q)
             time = get_cost_from_db(q, conn, False)
             sql_informs[q] = time

@@ -4,6 +4,7 @@ import re
 from collections import defaultdict, deque
 from copy import deepcopy
 import config
+import networkx
 # from db_utils import *
 
 
@@ -502,6 +503,8 @@ class GlobalPlan:
             self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
             return
         node1s, node2s = self.find_shared_op(plan.G)
+        im = plan.render()
+        im.save(f'{config.d['sys_args']['job_plan_img_path']}/{plan_idx}.png') 
         press = []
         if(len(node1s) == 0):
             # 无法Share，直接加入G, 新加入的plan以‘Plan(index)-’区分
@@ -519,9 +522,13 @@ class GlobalPlan:
                 press.append(pres)
                 # 首次添加share，需要把原来的plan_idx也加上
                 if len(self.G.nodes[node1]["share_list"]) == 0:
-                    node1_root = get_root(self.G, node1)
+                    node1_plan_index = node1.split('_')[0]
+                    # node1_root = get_root(self.G, node1)
                     # TODO: bug：node1_root不在self.roots中
-                    node1_plan_index = self.roots.index(node1_root)
+                    # try:
+                    #     node1_plan_index = self.roots.index(node1_root)
+                    # except ValueError:
+                    #     print("bug")
                     self.G.nodes[node1]["share_list"].append(node1_plan_index)
                 # 本身即为根节点
                 if(len(pres) == 0):
@@ -557,6 +564,7 @@ class GlobalPlan:
                     excluded.extend(list(nx.descendants(g2, i)))
                     node1.append(node)
                     node2.append(i)
+                    break
         return node1, node2
     
     # 将merged_node中的select列合并到shared_node中,其中shared_node一定是在GlobalPlan中的
@@ -599,7 +607,10 @@ class GlobalPlan:
     def merge_cond(self, g2, node1, node2, plan_idx2):
         plan_idx1, plan_idx2 = get_plan_idx(node1), plan_idx2
         conds = []
-        succs = list(nx.descendants(g2, node2))
+        try:
+            succs = list(nx.descendants(g2, node2))
+        except networkx.exception.NetworkXError:
+            print(1)
         for node_idx in succs:
             node_data = g2.nodes[node_idx]
             if(node_data["type"] == "Scan" and len(node_data['conds']) > 0):
@@ -743,6 +754,16 @@ class GlobalPlan:
             sql = f"/*+ Leading({_get_leading(node_idx)}) */" + sql
         print(f'生成sql：{sql}')
         return sql
+    
+    # 获取node_idx下所有share node中的table entries的总和
+    def get_shared_node_entry_num(self, node_idx):
+        count = 0
+        successors = list(nx.descendants(self.G, node_idx))
+        for node in successors:
+            if self.G.nodes[node]['type'] == 'Share':
+                count += len(self.G.nodes[node]['table_entries'])
+        return count
+
     
 def get_root(graph, node):
     current = node

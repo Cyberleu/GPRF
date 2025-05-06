@@ -42,7 +42,7 @@ if __name__ == '__main__':
     for i in range(len(x_train)):
         plan = build_and_save_optimizer_plan(x_train[i])
         im = plan.render()
-        im.save('/data/homedata/lch/GPRF/im.png')
+        im.save('/data/homedata/lch/GPRF/img/im.png')
         plans.append(plan)
         # root_node = plan.get_roots()[0]
         sub_plans = get_sub_plans2(plan)

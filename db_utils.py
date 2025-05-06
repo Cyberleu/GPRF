@@ -707,7 +707,7 @@ def generate_env_config():
             sql_list.append(q)
         query_tables, reverse_aliases_dict, query_conditions , query_select = parse_sql_query(q)
         query_name = os.path.basename(each)
-        cost, time = get_cost_from_db(q, config.conn, exec_time = True, time_limit=3000000)
+        cost, time = get_cost_from_db(q, config.conn, exec_time = False, time_limit=3000000)
         env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, q,query_name,cost, time]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
