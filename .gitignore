@@ -3,3 +3,4 @@ img/
 __pycache__/
 test/
 result/
+runs/

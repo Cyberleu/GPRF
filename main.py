@@ -1,3 +1,5 @@
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 from gprf import GPRF
 from db_utils import *
 import yaml

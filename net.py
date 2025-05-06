@@ -11,13 +11,14 @@ class Net(nn.Module):
         self.gp_gnn = ConvGNN()
         self.sp_gnn = ConvGNN()
         self.lstm = LSTMNetwork(input_size = 21)
-        self.fc = FC(d_out = d_out)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.fc = FC(d_out = d_out, device = self.device)
     
     def forward(self, input):
         # 分别为全局plan，当前plan，batch中所有查询的table序列
         gp = [row[0] for row in input]
         sp = [row[1] for row in input]
-        bt = torch.empty(0,input[0][2].shape[0],input[0][2].shape[1])
+        bt = torch.empty(0,input[0][2].shape[0],input[0][2].shape[1]).to(self.device)
         for row in input:
             bt = torch.cat((bt, row[2].unsqueeze(0))) 
         out1 = self.gp_gnn(gp)
@@ -27,12 +28,12 @@ class Net(nn.Module):
         out = self.fc(concat)
         return out
     
-def FC(d_in = 128 * 3, d_out = 256, fc_nlayers = 4, drop = 0.5):
-    dims = torch.linspace(d_in, d_out, fc_nlayers+1, dtype=torch.long)
+def FC(d_in = 128 * 3, d_out = 256, fc_nlayers = 4, drop = 0.5, device = 'cuda'):
+    dims = torch.linspace(d_in, d_out, fc_nlayers+1, dtype=torch.long).to(device)
     layers = []
     for i in range(fc_nlayers-1):
         layers.extend([nn.Linear(int(dims[i]), int(dims[i+1])),
-                       nn.Dropout(drop), nn.LayerNorm([int(dims[i+1])]), nn.ReLU()])
+                    nn.Dropout(drop), nn.LayerNorm([int(dims[i+1])]), nn.ReLU()])
     layers.append(nn.Linear(int(dims[-2]), d_out))
     return nn.Sequential(*layers)
     
@@ -78,6 +79,8 @@ class ConvGNN(nn.Module):
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
         self.num_layers = num_layers
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.convs = nn.ModuleList()
         self.pools = nn.ModuleList()
         
@@ -92,16 +95,16 @@ class ConvGNN(nn.Module):
         
         # 全局池化和全连接层
         self.global_pool = global_mean_pool
-        self.fc = FC(d_in = hidden_dim, d_out = output_dim)
+        self.fc = FC(d_in = hidden_dim, d_out = output_dim,device = self.device)
     
     # batch中可能有空图（如刚开始的GlobalPlan），需要单独处理。
     def forward(self, data_list):
         def add_dummy_node(data_list, num_features=config.d['net_args']['node_shape']):
-            dummy_feature = torch.zeros(1, num_features)  # 虚拟节点特征
+            dummy_feature = torch.zeros(1, num_features).to(self.device)  # 虚拟节点特征
             for data in data_list:
                 if data.num_nodes == 0:
                     data.x = dummy_feature  # 填充为 [1, num_features]
-                    data.edge_index = torch.empty(2, 0, dtype=torch.long)  # 保持边为空
+                    data.edge_index = torch.empty(2, 0, dtype=torch.long).to(self.device)  # 保持边为空
             return data_list
         data_list = add_dummy_node(data_list)
         n = len(data_list)

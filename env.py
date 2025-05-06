@@ -23,6 +23,7 @@ class Env():
         self.conn = config.conn
         self.scheme = config.env_config['scheme']
         self.db_data = config.env_config['db_data']
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.rel_to_idx = {rel: i for i, rel in enumerate(
             self.scheme)}  # idx = obj[rel]
         self.rels = list(self.rel_to_idx.keys())
@@ -49,12 +50,12 @@ class Env():
         # 记录每个query的cost
         self.query_costs = {}
         self.view_costs = {}
-        self.eval_net = Net(d_out = self.N_rels * self.N_rels)
-        self.target_net = Net(d_out = self.N_rels * self.N_rels)
+        self.eval_net = Net(d_out = self.N_rels * self.N_rels).to(self.device)
+        self.target_net = Net(d_out = self.N_rels * self.N_rels).to(self.device)
         self.plan_encoder = PlanEncoder(self)
         self.query_encoder = QueryEncoder(self)
         self.sql_names = []
-        self.tables_encode = torch.zeros((0, self.N_rels))
+        self.tables_encode = torch.zeros((0, self.N_rels)).to(self.device)
         # 记录batch执行的最短时间,在reset时不更新
         self.db_data = config.env_config['db_data']
         self.batch_cost = dict() # {(sql_name, sql_name...) : (total_cost, total_time)}
@@ -143,9 +144,9 @@ class Env():
         self.current_step = 0
         self.plan = self.plans[0]
         # 建立该batch的全局编码
-        self.tables_encode = torch.zeros((0, self.N_rels))
+        self.tables_encode = torch.zeros((0, self.N_rels)).to(self.device)
         for plan in self.plans:
-            pos = torch.zeros(self.N_rels)
+            pos = torch.zeros(self.N_rels).to(self.device)
             for _, table in plan.alias_to_table.items():
                 pos[self.rel_to_idx[table]] = pos[self.rel_to_idx[table]] + 1
             self.tables_encode = torch.vstack((self.tables_encode, pos))
@@ -156,7 +157,7 @@ class Env():
     
     # mask的shape是N_rels*N_rels,只当前状态下哪两个表之间可以连接就为1
     def get_mask(self):
-        m = torch.zeros((self.N_rels, self.N_rels), dtype=bool)
+        m = torch.zeros((self.N_rels, self.N_rels), dtype=bool).to(self.device)
         roots = self.plan.get_roots()
         for i, n1 in enumerate(roots):
             for j, n2 in enumerate(roots):
@@ -265,12 +266,13 @@ class PlanEncoder():
     def __init__(self, env):
         self.env = env
         self.node_shape = config.d['net_args']['node_shape']
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # 返回矩阵和边信息，不是一个向量
     def encode(self, plan):
         
         if len(plan.roots) == 0:
-            x = torch.empty(0,self.node_shape,dtype=torch.float32)
-            edge_index = torch.empty(2, 0, dtype=torch.long)
+            x = torch.empty(0,self.node_shape,dtype=torch.float32).to(self.device)
+            edge_index = torch.empty(2, 0, dtype=torch.long).to(self.device)
             return Data(x=x, edge_index=edge_index)
             
         plan = self.node_encode(plan)
@@ -286,8 +288,8 @@ class PlanEncoder():
         sources = [node_idx[e[0]] for e in edges]
         targets = [node_idx[e[1]] for e in edges]
 
-        edge_index = torch.tensor([sources, targets], dtype=torch.long)
-        x = torch.tensor(node_vecs, dtype=torch.float32)
+        edge_index = torch.tensor([sources, targets], dtype=torch.long).to(self.device)
+        x = torch.tensor(node_vecs, dtype=torch.float32).to(self.device)
         return Data(x=x, edge_index=edge_index)
 
     def node_encode(self, plan):

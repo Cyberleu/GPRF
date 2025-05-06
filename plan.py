@@ -504,7 +504,7 @@ class GlobalPlan:
             return
         node1s, node2s = self.find_shared_op(plan.G)
         im = plan.render()
-        im.save(f'{config.d['sys_args']['job_plan_img_path']}/{plan_idx}.png') 
+        im.save(f'{config.d["sys_args"]["job_plan_img_path"]}/{plan_idx}.png') 
         press = []
         if(len(node1s) == 0):
             # 无法Share，直接加入G, 新加入的plan以‘Plan(index)-’区分
@@ -605,7 +605,7 @@ class GlobalPlan:
         
     # 合并node1和node2子树中scan算子中的所有cond,注意需要将不同sql对应的cond区分开来
     def merge_cond(self, g2, node1, node2, plan_idx2):
-        plan_idx1, plan_idx2 = get_plan_idx(node1), plan_idx2
+        plan_idx1 = self.get_plan_idx(node1)
         conds = []
         try:
             succs = list(nx.descendants(g2, node2))
@@ -765,39 +765,39 @@ class GlobalPlan:
         return count
 
     
-def get_root(graph, node):
-    current = node
-    while True:
-        # 获取当前节点的父节点列表
-        predecessors = list(graph.predecessors(current))
-        if not predecessors:  # 没有父节点，说明是根节点
-            return current
-        current = predecessors[0]  # 二叉树中每个节点只有一个父节点
+    # def get_root(self, node):
+    #     current = node
+    #     while True:
+    #         # 获取当前节点的父节点列表
+    #         predecessors = list(self.G.predecessors(current))
+    #         if not predecessors:  # 没有父节点，说明是根节点
+    #             return current
+    #         current = predecessors[0]  # 二叉树中每个节点只有一个父节点
 
-    
-def get_plan_idx(node):
-    parts = node.split('_')
-    plan_idx = parts[0]  
-    return int(plan_idx)
+        
+    def get_plan_idx(self, node):
+        parts = node.split('_')
+        plan_idx = parts[0]  
+        return int(plan_idx)
 
-# 将nx图转为pyg图作为gnn的输入
-def convert_nx_to_pyg(G):
-    # 获取所有节点并排序，确保顺序一致
-    nodes = list(G.nodes())
-    node_idx = {node: idx for idx, node in enumerate(nodes)}
+    # 将nx图转为pyg图作为gnn的输入
+    # def convert_nx_to_pyg(self):
+    #     # 获取所有节点并排序，确保顺序一致
+    #     nodes = list(self.G.nodes())
+    #     node_idx = {node: idx for idx, node in enumerate(nodes)}
 
-    # 生成节点特征（例如，每个节点一个特征值为1）
-    n_nodes = len(nodes)
-    x = torch.ones(n_nodes, 1, dtype=torch.float32)
-    
-    # 处理边信息
-    edges = list(G.edges())
-    sources = [node_idx[e[0]] for e in edges]
-    targets = [node_idx[e[1]] for e in edges]
+    #     # 生成节点特征（例如，每个节点一个特征值为1）
+    #     n_nodes = len(nodes)
+    #     x = torch.ones(n_nodes, 1, dtype=torch.float32).to(self.device)
+        
+    #     # 处理边信息
+    #     edges = list(self.G.edges())
+    #     sources = [node_idx[e[0]] for e in edges]
+    #     targets = [node_idx[e[1]] for e in edges]
 
-    edge_index = torch.tensor([sources, targets], dtype=torch.long)
+    #     edge_index = torch.tensor([sources, targets], dtype=torch.long)
 
-    return Data(x=x, edge_index=edge_index)
+    #     return Data(x=x, edge_index=edge_index)
 
         
 

@@ -37,7 +37,7 @@ GAMMA = 0.9
 LR = 0.01
 
 class Agent(nn.Module):
-    def __init__(self, eval_net, target_net, eps=0, device='cpu'):
+    def __init__(self, eval_net, target_net, eps=100, device = 'cuda'):
         super().__init__()
         self.eval_net = eval_net
         self.target_net = target_net
@@ -67,7 +67,7 @@ class Agent(nn.Module):
         dims = logit.shape
         masked_logit = torch.where(mask.view(dims).to(logit.device),
                                    logit, torch.tensor(float("-inf")).to(logit.device))
-        probs = masked_logit.softmax(-1).detach().numpy()
+        probs = masked_logit.softmax(-1).detach().cpu().numpy()
         if np.random.uniform() < self.eps:
             action_idx = np.random.choice(range(0,len(probs)), 1, p=probs)[0]
         else :
@@ -94,21 +94,21 @@ class Agent(nn.Module):
         b_a = [[row[1][0] *  mask_length + row[1][1]] for row in data]
         # batch reward
         b_r  = [row[2] for row in data]
-        b_r = torch.tensor(b_r, dtype=torch.float32)
+        b_r = torch.tensor(b_r, dtype=torch.float32).to(self.device)
         # batch next state
         b_ns = [row[3] for row in data]
         b_d = [row[4] for row in data]
         # batch next mask
-        b_nm = torch.empty((0,mask_length, mask_length), dtype=bool)
+        b_nm = torch.empty((0,mask_length, mask_length), dtype=bool).to(self.device)
         for row in data:
             b_nm = torch.concat((b_nm, row[5].unsqueeze(0)))
         # batch complete mask
-        b_cm = torch.empty(0, dtype=bool)
+        b_cm = torch.empty(0, dtype=bool).to(self.device)
         for row in data:
-            b_cm = torch.concat((b_cm, torch.tensor([row[6]], dtype = bool)))
+            b_cm = torch.concat((b_cm, torch.tensor([row[6]], dtype = bool).to(self.device)))
         
         
-        q_eval = self.eval_net(b_s).gather(1, torch.tensor(b_a)).view(-1)
+        q_eval = self.eval_net(b_s).gather(1, torch.tensor(b_a).to(self.device)).view(-1)
         
         logit = self.target_net(b_ns)
         q_next = torch.where(b_nm.view(length,-1).to(logit.device),
@@ -244,7 +244,7 @@ class GPRF():
         self.env_config = config.env_config
         self.sql_names = list(self.env_config['db_data'].keys())
         self.env = Env()
-        self.agent = Agent(self.env.eval_net,self.env.target_net)
+        self.agent = Agent(self.env.eval_net,self.env.target_net, device = self.env.device)
         self.count = 0
     def run(self):
         for epoch in range(self.d['train_args']['epochs']):
@@ -323,7 +323,8 @@ def find_inner_join_actions(p):
 
 def get_mask(p):
     size = len(p.get_roots())
-    m = torch.zeros((size, size), dtype=bool)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    m = torch.zeros((size, size), dtype=bool).to(device)
     m[list(zip(*find_inner_join_actions(p)))] = 1
     return m
 
