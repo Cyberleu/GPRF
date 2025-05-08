@@ -16,6 +16,7 @@ from torch_geometric.data import Data
 import sys
 import config
 import random
+from collections import Counter
 
 sys.setrecursionlimit(10000)
 class Env():
@@ -59,7 +60,7 @@ class Env():
         # 记录batch执行的最短时间,在reset时不更新
         self.db_data = config.env_config['db_data']
         self.batch_cost = dict() # {(sql_name, sql_name...) : (total_cost, total_time)}
-        
+        self.batch_dict = {}
 
     def get_obs(self):
         """
@@ -249,10 +250,31 @@ class Env():
         if not self.is_done():
             return 0
         count = self.get_subtree_delta()
+        # 如果没有公共子树则惩罚
         if count == 0:
             return -5
         else:
             return count
+            # # 将table转化为a-u的单个字符
+            # batch = []
+            # for plan in self.global_plan.singlePlans:
+            #     sequence = ''
+            #     for table in plan.query_tables:
+            #         sequence += chr(ord('a') + self.rel_to_idx[table])
+            #     batch.append(sequence)
+            # pos_key = CanonicalBatch(batch)
+            # # 当前key的count只有大于等于经验池中所有子集的count时才进行更新,惩罚量为与最优的子集的差值
+            # flag = False
+            # min_count = 999
+            # for key in self.batch_dict:
+            #     if key.is_subset_of(pos_key) and count <= self.batch_dict[key]:
+            #         flag = True
+            #         min_count = min(self.batch_dict[key], min_count)
+            # if flag:
+            #     return min_count-count
+            # else:
+            #     self.batch_dict[pos_key] = count
+            #     return count
         
 
     def render(self):
@@ -500,30 +522,62 @@ class QueryEncoder():
             index_features
         )
         conn.close()
+
+
+# 支持batch的等价性和子集判断
+    
+class CanonicalBatch:
+    """支持哈希等价和子集判断的自定义字典键"""
+    
+    def __init__(self, batch):
+        # 规范化步骤：每个字符串字符排序 + 整个batch排序
+        self._sorted_batch = tuple(sorted(tuple(sorted(s)) for s in batch))
         
-class TrajectoryStorage():
-    def __init__(self):
-        self.episodes = []
+        # 预计算哈希值
+        self._hash = hash(self._sorted_batch)
+        
+        # 生成字符计数器列表（用于子集判断）
+        self._counters = [Counter(s) for s in self._sorted_batch]
+    
+    def __hash__(self):
+        return self._hash
+    
+    def __eq__(self, other):
+        return self._sorted_batch == other._sorted_batch
+    
+    def is_subset_of(self, other) -> bool:
+        """判断当前batch是否是另一个batch的子集"""
+        # 优化1：先按特征排序（字符数量降序，字符种类排序）
+        self_sorted = sorted(self._counters, 
+                           key=lambda c: (-sum(c.values()), sorted(c)))
+        other_sorted = sorted(other._counters, 
+                            key=lambda c: (-sum(c.values()), sorted(c)))
+        
+        # 优化2：使用贪心算法匹配最佳候选
+        matched = [False] * len(other_sorted)
+        for c_self in self_sorted:
+            found = False
+            # 优先匹配字符数量多的目标
+            for i, c_other in enumerate(other_sorted):
+                if not matched[i] and self._contains(c_other, c_self):
+                    matched[i] = True
+                    found = True
+                    break
+            if not found:
+                return False
+        return True
+    
+    @staticmethod
+    def _contains(counter_a, counter_b) -> bool:
+        """判断counter_a是否包含counter_b的所有字符（数量足够）"""
+        for char, count in counter_b.items():
+            if counter_a[char] < count:
+                return False
+        return True
 
-    def set_env(self, env):
-        self.env = env
+    def __repr__(self):
+        return f"BatchKey({self._sorted_batch})"
 
-    def split_trajectory(self, plan, reward):
-        traj = []
-        for i, (node, action) in enumerate(plan._joins[::-1]):
-            plan.disjoin(node)
-            obs = self.env.get_status(deepcopy(plan))
-            traj.append(
-                [obs, (action, self.env.get_mask(plan), i == 0, (i == 0)*reward)])
-        return traj[::-1]
-
-    def append(self, plan, final_reward):
-        self.episodes.append(self.split_trajectory(
-            deepcopy(plan), final_reward))
-
-    def get_dataset(self, n=1000):
-        """Get last n trajectories"""
-        return self.episodes[-n:]
 
 
 import json

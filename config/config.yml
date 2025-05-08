@@ -4,8 +4,16 @@ sys_args:
   baseline_path: /data/homedata/lch/GPRF/data/baseline.json
   job_plan_img_path: /data/homedata/lch/GPRF/img/
   result_path: /data/homedata/lch/GPRF/result/
+  reward_log_path: /data/homedata/lch/GPRF/result/reward.log
+  # 一个batch中的sql数量
   sql_batch_size: 20
+  # 物化视图中表的数量下限
   mv_min_size: 2
+  # 是否使用优先经验回放
+  use_per: true
+  # 是否需要奖励重构，采用最简单的重构方法，即按系数往前传播
+  need_reward_shape: true
+# 当前只支持pg
 db_args:
   host: localhost
   port: 5432
@@ -14,9 +22,24 @@ db_args:
   db: imdb 
   time_limit: 5
 net_args:
+  # 21 * 2 + 3
   node_shape: 45
 train_args:
   # 不同random batch的训练轮数
   epochs : 1
   # 一个batch的训练轮数
-  episodes: 200
+  episodes: 500
+  # 批量更新的数量
+  batch_size: 32
+  # 经验区容量
+  memory_capacity: 500
+  # 学习率
+  lr: 0.01
+  # 贪心率
+  episilon: 0.2
+  # 折扣因子
+  gamma: 0.9
+  # target_net更新频率
+  target_replace_iter: 10
+  
+

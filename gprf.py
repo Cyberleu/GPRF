@@ -15,11 +15,12 @@ import random
 from net import Net
 import matplotlib.pyplot as plt
 import numpy as np
+from replay import *
 
 import logging
 LOG = logging.getLogger(__name__)
 logging.basicConfig(
-    filename='reward.log',    # 日志文件名
+    filename= config.d['sys_args']['reward_log_path'],    # 日志文件名
     filemode='w',          # 文件模式：'a'为追加（默认），'w'为覆盖
     level=logging.INFO,   # 最低日志级别（DEBUG及以上均记录）
     format='%(asctime)s - %(levelname)s - %(message)s',  # 自定义格式
@@ -27,17 +28,16 @@ logging.basicConfig(
 )
 
 INF = 1e9
-TARGET_REPLACE_ITER = 1                       # 目标网络更新频率(固定不懂的Q网络)
 MEMORY_CAPACITY = 500                          # 记忆库容量
 BATCH_SIZE = 8   
 GET_SAMPLE = 1  # 0为随机获取sample， 1为获取最新n个sample
 REWARD_UPDATE_METHOD = 0 # 0为更新成相同的reward 1为按比例减小reward
-REWARD_UPDATE_COEF = 1
+REWARD_UPDATE_COEF = 0.9
 GAMMA = 0.9
 LR = 0.01
 
 class Agent(nn.Module):
-    def __init__(self, eval_net, target_net, eps=100, device = 'cuda'):
+    def __init__(self, eval_net, target_net, eps=0.2, device = 'cuda'):
         super().__init__()
         self.eval_net = eval_net
         self.target_net = target_net
@@ -46,7 +46,12 @@ class Agent(nn.Module):
         self.eps = eps
         self.loss_func = nn.MSELoss().to(self.device)
         self.optimizer = torch.optim.Adam(self.eval_net.parameters(),lr=LR)
-        self.ts = TrajectoryStorage()
+        if config.d['sys_args']['use_per']:
+            self.er = PrioritizedReplayBuffer()
+        else:
+            self.er = NormalReplayBuffer()
+        self.target_replace_iter = config.d['train_args']['target_replace_iter']
+
         # if self.net.pretrained_path:
         #     self.net.load_state_dict(torch.load(self.net.pretrained_path))
         #     if len(self.net.fit_pretrained_layers) > 0:
@@ -75,17 +80,21 @@ class Agent(nn.Module):
         action = np.unravel_index(action_idx, mask_dim)
         assert mask[action[0]][action[1]] == True
         return action
+    
+    def store_transition(self, state, action, reward, next_state, is_done, next_mask, is_complete):
+        self.er.push(state, action, reward, next_state, is_done, next_mask, is_complete)
 
     def learn(self):
-        if self.learn_step_counter % TARGET_REPLACE_ITER == 0:
+        if self.learn_step_counter % self.target_replace_iter == 0:
             self.target_net.load_state_dict(self.eval_net.state_dict())   # 将评价网络的权重参数赋给目标网络
         self.learn_step_counter +=1                 # 目标函数的学习次数+1
         
         # 抽buffer中的数据学习
-        if GET_SAMPLE == 0:
-            data = self.ts.get_dataset_random(BATCH_SIZE)
-        elif GET_SAMPLE == 1:
-            data = self.ts.get_dataset_lastn(BATCH_SIZE)
+        data = self.re.sample()
+        # if GET_SAMPLE == 0:
+        #     data = self.ts.get_dataset_random(BATCH_SIZE)
+        # elif GET_SAMPLE == 1:
+        #     data = self.ts.get_dataset_lastn(BATCH_SIZE)
         length = len(data)
         mask_length = data[0][5].shape[0]
         # batch state
@@ -125,6 +134,51 @@ class Agent(nn.Module):
         loss.backward()                                                 # 误差反向传播, 计算参数更新值
         self.optimizer.step()                                           # 更新评估网络的所有参数
 
+    def learn(self):
+        if self.learn_step_counter % self.target_replace_iter == 0:
+            self.target_net.load_state_dict(self.eval_net.state_dict())   # 将评价网络的权重参数赋给目标网络
+        self.learn_step_counter +=1                 # 目标函数的学习次数+1
+        
+        # 抽buffer中的数据学习
+        batch, indexes,weights = self.er.sample()
+        b_s, b_a_orig, b_r, b_ns, _, b_nm_orig, b_cm_orig = batch
+        length = len(b_s)
+        mask_length = b_nm_orig[0].shape[0]
+        # batch action
+        b_a = [[row[0] * mask_length + row[1]]for row in b_a_orig]
+        b_r = torch.tensor(b_r, dtype=torch.float32).to(self.device)
+        # batch next mask
+        b_nm = torch.empty((0,mask_length, mask_length), dtype=bool).to(self.device)
+        for row in b_nm_orig:
+            b_nm = torch.concat((b_nm, row.unsqueeze(0)))
+        # batch complete mask
+        b_cm = torch.empty(0, dtype=bool).to(self.device)
+        for row in b_cm_orig:
+            b_cm = torch.concat((b_cm, torch.tensor([row], dtype = bool).to(self.device)))
+        
+        
+        q_eval = self.eval_net(b_s).gather(1, torch.tensor(b_a).to(self.device)).view(-1)
+        
+        logit = self.target_net(b_ns)
+        q_next = torch.where(b_nm.view(length,-1).to(logit.device),
+                                   logit, torch.tensor(float("-inf")).to(logit.device)).detach()
+        q_target_temp = b_r+GAMMA * q_next.max(1)[0]
+        # 处理is_complete的情况，防止出现全是-inf的情况
+        q_target = torch.where(b_cm,
+                          b_r, q_target_temp)
+        # q_target = b_r + GAMMA * q_next.max(1)[0]
+        # q_next.max(1)[0]表示只返回每一行的最大值，不返回索引(长度为32的一维张量)；.view()表示把前面所得到的一维张量变成(BATCH_SIZE, 1)的形状；最终通过公式得到目标值
+        loss = (torch.FloatTensor(weights).to(self.device) * self.loss_func(q_eval, q_target)).mean()
+        # 输入32个评估值和32个目标值，使用均方损失函数
+        self.optimizer.zero_grad()                                      # 清空上一步的残余更新参数值
+        loss.backward()                                                 # 误差反向传播, 计算参数更新值
+        self.optimizer.step() 
+
+        abs_errors = torch.abs(q_eval - q_target).detach().cpu().numpy().squeeze()
+        self.er.update_error(indexes, abs_errors)  # 更新经验的优先级
+
+        self.learn_step_counter += 1
+
 
     def train_net(self, train_data, epochs, criterion, batch_size, lr, scheduler, gamma, value_loss_coef, entropy_loss_coef, weight_decay, clip_grad_norm, betas, val_data=None, val_steps=100, min_iters=1000):
         LOG.info(f"Start training: {time.ctime()}")
@@ -163,55 +217,6 @@ class Agent(nn.Module):
                 Entropy loss {entropy_loss.item():.2f},
                 {iters} iterations.""")
         return pg_loss.item(), value_loss.item(), entropy_loss.item()
-
-class TrajectoryStorage():
-    def __init__(self):
-        self.memory = []
-        self.MAX_CAPACITY = 500
-        self.memory_idx = -1
-
-    def set_env(self, env):
-        self.env = env
-
-    def store_transition(self,state, action, reward, next_state, is_done, next_mask, is_complete):
-        if(len(self.memory) < MEMORY_CAPACITY ):
-            self.memory.append([state, action, reward, next_state, is_done, next_mask, is_complete])
-            self.memory_idx += 1
-        else:
-            self.memory_idx = (self.memory_idx+1) % MEMORY_CAPACITY
-            self.memory[self.memory_idx] = [state, action, reward, next_state, is_done, next_mask, is_complete]
-
-    # 包括当前idx，往前update_count个更新成新的reward
-    def update_reward(self, reward, update_count):
-        idx = self.memory_idx
-        while(update_count):
-            if REWARD_UPDATE_METHOD == 0:
-                self.memory[idx][2] = reward
-            elif REWARD_UPDATE_METHOD == 1:
-                self.memory[idx][2] = reward
-                reward = reward * REWARD_UPDATE_COEF
-            update_count -= 1
-            idx -= 1
-
-    def get_dataset_lastn(self, n=BATCH_SIZE):
-        """Get last n trajectories"""
-        n = max(len(self.memory), n)
-        start = self.memory_idx-n
-        dataset = []
-        if start < 0:
-            dataset.extend(self.memory[start:])
-            dataset.extend(self.memory[:self.memory_idx+1])
-        else:
-            dataset.append(self.memory[start:self.memory_idx+1])
-        return dataset
-    def get_dataset_random(self, n = BATCH_SIZE):
-        n = max(len(self.memory), n)
-        indexes = np.random.choice(len(self.memory),n)
-        dataset = []
-        for index in indexes:
-            dataset.append(self.memory[index])
-        return dataset
-        
 
 def random_batch_splitter(sql_list, batch_size):
     """
@@ -263,7 +268,7 @@ class GPRF():
                         # state中包含三个部分，分别是全局plan状态（以树形表示），当前plan的编码（以树形表示），当前batch的编码（以向量表示）
                         action = self.agent.predict(state, mask)   
                         next_state ,reward, is_done,  next_mask, is_complete= self.env.step(action)
-                        self.agent.ts.store_transition(state, action, reward, next_state, is_done, next_mask, is_complete) 
+                        self.agent.store_transition(state, action, reward, next_state, is_done, next_mask, is_complete) 
                         total_reward += reward
                         if is_done:
                             # 在plan的最终结果出来后更新前面的所有reward,update_count表示前面涉及到了几个join，总join数应是表数-1，出去最后一次，所以要-2
@@ -299,7 +304,7 @@ class GPRF():
                         linestyle='-',     # 实线
                         linewidth=2,       # 线宽
                         label='正弦曲线')   # 图例标签 
-                plt.savefig('reward.png')
+                plt.savefig(f'reward{batch_idx}.png')
 
         
 
