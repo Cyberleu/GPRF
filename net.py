@@ -6,29 +6,44 @@ from torch_geometric.data import Batch
 import config
 
 class Net(nn.Module):
-    def __init__(self, d_out):
+    def __init__(self, env):
         super().__init__()
+        self.env = env
         self.gp_gnn = ConvGNN()
         self.sp_gnn = ConvGNN()
-        self.lstm = LSTMNetwork(input_size = 21)
+        self.lstm = LSTMNetwork(input_size = self.env.N_rels)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.fc = FC(d_out = d_out, device = self.device)
+        self.fc = FC(d_out = self.env.out, device = self.device)
+        self.mlp1 = FC(d_in = self.env.N_rels * self.env.N_rels * config.d['sys_args']['sql_batch_size'], d_out = self.env.N_rels * self.env.N_rels)
+        self.mlp2 = FC(d_in = self.env.N_rels * self.env.N_rels * 2, d_out = self.env.out)
     
+    # def forward(self, input):
+    #     # 分别为全局plan，当前plan，batch中所有查询的table序列
+    #     gp = [row[0] for row in input]
+    #     sp = [row[1] for row in input]
+    #     bt = torch.empty(0,input[0][2].shape[0],input[0][2].shape[1]).to(self.device)
+    #     for row in input:
+    #         bt = torch.cat((bt, row[2].unsqueeze(0))) 
+    #     out1 = self.gp_gnn(gp)
+    #     out2 = self.sp_gnn(sp)
+    #     out3 = self.lstm(bt)
+    #     concat = torch.concat((out1, out2, out3), dim = 1)
+    #     out = self.fc(concat)
+        
+    #     return out
+
     def forward(self, input):
-        # 分别为全局plan，当前plan，batch中所有查询的table序列
-        gp = [row[0] for row in input]
-        sp = [row[1] for row in input]
-        bt = torch.empty(0,input[0][2].shape[0],input[0][2].shape[1]).to(self.device)
+        gb_vecs = torch.zeros((0, input[0][0].shape[0])).to(self.device)
+        sp_vecs = torch.zeros((0, input[0][1].shape[0])).to(self.device)
         for row in input:
-            bt = torch.cat((bt, row[2].unsqueeze(0))) 
-        out1 = self.gp_gnn(gp)
-        out2 = self.sp_gnn(sp)
-        out3 = self.lstm(bt)
-        concat = torch.concat((out1, out2, out3), dim = 1)
-        out = self.fc(concat)
+            gb_vecs = torch.vstack((gb_vecs, row[0]))
+            sp_vecs = torch.vstack((sp_vecs, row[1]))
+        out1 = self.mlp1(gb_vecs)
+        concat = torch.cat((out1, sp_vecs), dim = 1)
+        out = self.mlp2(concat)
         return out
     
-def FC(d_in = 128 * 3, d_out = 256, fc_nlayers = 4, drop = 0.5, device = 'cuda'):
+def FC(d_in = 128 * 3, d_out = 256, fc_nlayers = 4, drop = 0.2, device = 'cuda'):
     dims = torch.linspace(d_in, d_out, fc_nlayers+1, dtype=torch.long).to(device)
     layers = []
     for i in range(fc_nlayers-1):

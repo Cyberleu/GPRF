@@ -29,7 +29,7 @@ class NormalReplayBuffer(ReplayBuffer):
         self.GET_SAMPLE = 1 # 0为随机获取sample， 1为获取最新n个sample
     
     def push(self,state, action, reward, next_state, is_done, next_mask, is_complete, error = 0):
-        transition = (state, action, reward, next_state, is_done, next_mask, is_complete)
+        transition = [state, action, reward, next_state, is_done, next_mask, is_complete]
         self.temp.append(transition)
 
         if is_done:
@@ -77,7 +77,7 @@ class NormalReplayBuffer(ReplayBuffer):
 
     def get_dataset_lastn(self):
         """Get last n trajectories"""
-        batch_size = max(len(self.memory), self.batch_size)
+        batch_size = max(len(self.memory), self.BATCH_SIZE)
         start = self.memory_idx-batch_size
         dataset = []
         indexes = []
@@ -89,10 +89,10 @@ class NormalReplayBuffer(ReplayBuffer):
         else:
             dataset.append(self.memory[start:self.memory_idx+1])
             indexes.extend(range(start, self.memory_idx))
-        return zip(*dataset),indexes, [1 for _ in range(indexes)]
+        return zip(*dataset),indexes, [1 for _ in range(len(indexes))]
     
     def get_dataset_random(self):
-        batch_size = max(len(self.memory), self.batch_size)
+        batch_size = max(len(self.memory), self.BATCH_SIZE)
         indexes = np.random.choice(len(self.memory),batch_size)
         dataset = []
         for index in indexes:

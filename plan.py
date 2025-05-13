@@ -270,6 +270,7 @@ class SinglePlan():
                 name = f'{cond["left_entry_name"]}.{cond["left_col_name"]} = {cond["right_entry_name"]}.{cond["right_col_name"]}'
             labels[node] = name
         return render(self.G, labels, dpi)
+        
     
     # def render(self, attr=None, tables=False, dpi=80):
     #     labels = {}
@@ -503,8 +504,8 @@ class GlobalPlan:
             self.roots.append(f'{plan_idx}_{plan.get_roots()[0]}')
             return
         node1s, node2s = self.find_shared_op(plan.G)
-        im = plan.render()
-        im.save(f'{config.d["sys_args"]["job_plan_img_path"]}/{plan_idx}.png') 
+        # im = plan.render()
+        # im.save(f'{config.d["sys_args"]["job_plan_img_path"]}/{plan_idx}.png') 
         press = []
         if(len(node1s) == 0):
             # 无法Share，直接加入G, 新加入的plan以‘Plan(index)-’区分

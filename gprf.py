@@ -84,55 +84,55 @@ class Agent(nn.Module):
     def store_transition(self, state, action, reward, next_state, is_done, next_mask, is_complete):
         self.er.push(state, action, reward, next_state, is_done, next_mask, is_complete)
 
-    def learn(self):
-        if self.learn_step_counter % self.target_replace_iter == 0:
-            self.target_net.load_state_dict(self.eval_net.state_dict())   # 将评价网络的权重参数赋给目标网络
-        self.learn_step_counter +=1                 # 目标函数的学习次数+1
+    # def learn(self):
+    #     if self.learn_step_counter % self.target_replace_iter == 0:
+    #         self.target_net.load_state_dict(self.eval_net.state_dict())   # 将评价网络的权重参数赋给目标网络
+    #     self.learn_step_counter +=1                 # 目标函数的学习次数+1
         
-        # 抽buffer中的数据学习
-        data = self.re.sample()
-        # if GET_SAMPLE == 0:
-        #     data = self.ts.get_dataset_random(BATCH_SIZE)
-        # elif GET_SAMPLE == 1:
-        #     data = self.ts.get_dataset_lastn(BATCH_SIZE)
-        length = len(data)
-        mask_length = data[0][5].shape[0]
-        # batch state
-        b_s = [row[0] for row in data]
-        # batch action
-        b_a = [[row[1][0] *  mask_length + row[1][1]] for row in data]
-        # batch reward
-        b_r  = [row[2] for row in data]
-        b_r = torch.tensor(b_r, dtype=torch.float32).to(self.device)
-        # batch next state
-        b_ns = [row[3] for row in data]
-        b_d = [row[4] for row in data]
-        # batch next mask
-        b_nm = torch.empty((0,mask_length, mask_length), dtype=bool).to(self.device)
-        for row in data:
-            b_nm = torch.concat((b_nm, row[5].unsqueeze(0)))
-        # batch complete mask
-        b_cm = torch.empty(0, dtype=bool).to(self.device)
-        for row in data:
-            b_cm = torch.concat((b_cm, torch.tensor([row[6]], dtype = bool).to(self.device)))
+    #     # 抽buffer中的数据学习
+    #     data = self.re.sample()
+    #     # if GET_SAMPLE == 0:
+    #     #     data = self.ts.get_dataset_random(BATCH_SIZE)
+    #     # elif GET_SAMPLE == 1:
+    #     #     data = self.ts.get_dataset_lastn(BATCH_SIZE)
+    #     length = len(data)
+    #     mask_length = data[0][5].shape[0]
+    #     # batch state
+    #     b_s = [row[0] for row in data]
+    #     # batch action
+    #     b_a = [[row[1][0] *  mask_length + row[1][1]] for row in data]
+    #     # batch reward
+    #     b_r  = [row[2] for row in data]
+    #     b_r = torch.tensor(b_r, dtype=torch.float32).to(self.device)
+    #     # batch next state
+    #     b_ns = [row[3] for row in data]
+    #     b_d = [row[4] for row in data]
+    #     # batch next mask
+    #     b_nm = torch.empty((0,mask_length, mask_length), dtype=bool).to(self.device)
+    #     for row in data:
+    #         b_nm = torch.concat((b_nm, row[5].unsqueeze(0)))
+    #     # batch complete mask
+    #     b_cm = torch.empty(0, dtype=bool).to(self.device)
+    #     for row in data:
+    #         b_cm = torch.concat((b_cm, torch.tensor([row[6]], dtype = bool).to(self.device)))
         
         
-        q_eval = self.eval_net(b_s).gather(1, torch.tensor(b_a).to(self.device)).view(-1)
+    #     q_eval = self.eval_net(b_s).gather(1, torch.tensor(b_a).to(self.device)).view(-1)
         
-        logit = self.target_net(b_ns)
-        q_next = torch.where(b_nm.view(length,-1).to(logit.device),
-                                   logit, torch.tensor(float("-inf")).to(logit.device)).detach()
-        q_target_temp = b_r+GAMMA * q_next.max(1)[0]
-        # 处理is_complete的情况，防止出现全是-inf的情况
-        q_target = torch.where(b_cm,
-                          b_r, q_target_temp)
-        # q_target = b_r + GAMMA * q_next.max(1)[0]
-        # q_next.max(1)[0]表示只返回每一行的最大值，不返回索引(长度为32的一维张量)；.view()表示把前面所得到的一维张量变成(BATCH_SIZE, 1)的形状；最终通过公式得到目标值
-        loss = self.loss_func(q_eval, q_target)
-        # 输入32个评估值和32个目标值，使用均方损失函数
-        self.optimizer.zero_grad()                                      # 清空上一步的残余更新参数值
-        loss.backward()                                                 # 误差反向传播, 计算参数更新值
-        self.optimizer.step()                                           # 更新评估网络的所有参数
+    #     logit = self.target_net(b_ns)
+    #     q_next = torch.where(b_nm.view(length,-1).to(logit.device),
+    #                                logit, torch.tensor(float("-inf")).to(logit.device)).detach()
+    #     q_target_temp = b_r+GAMMA * q_next.max(1)[0]
+    #     # 处理is_complete的情况，防止出现全是-inf的情况
+    #     q_target = torch.where(b_cm,
+    #                       b_r, q_target_temp)
+    #     # q_target = b_r + GAMMA * q_next.max(1)[0]
+    #     # q_next.max(1)[0]表示只返回每一行的最大值，不返回索引(长度为32的一维张量)；.view()表示把前面所得到的一维张量变成(BATCH_SIZE, 1)的形状；最终通过公式得到目标值
+    #     loss = self.loss_func(q_eval, q_target)
+    #     # 输入32个评估值和32个目标值，使用均方损失函数
+    #     self.optimizer.zero_grad()                                      # 清空上一步的残余更新参数值
+    #     loss.backward()                                                 # 误差反向传播, 计算参数更新值
+    #     self.optimizer.step()                                           # 更新评估网络的所有参数
 
     def learn(self):
         if self.learn_step_counter % self.target_replace_iter == 0:
@@ -252,6 +252,7 @@ class GPRF():
         self.agent = Agent(self.env.eval_net,self.env.target_net, device = self.env.device)
         self.count = 0
     def run(self):
+        avg_rewards = []
         for epoch in range(self.d['train_args']['epochs']):
         # 模拟实际情况，sql按批到来
             batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
@@ -292,22 +293,21 @@ class GPRF():
                         if is_complete:
                             logging.info(f'epoch:{epoch} batch_idx:{batch_idx} episode:{ep} total_reward:{total_reward} final_reward:{reward}')
                             rewards.append(total_reward)
-                x = np.linspace(0,self.d['train_args']['episodes'] ,1)  # X轴数据（0-10，100个点）
-                y = np.array(rewards)                # Y轴数据（正弦曲线）
+                avg_reward = sum(rewards)/len(rewards)
+                avg_rewards.append(avg_reward)
+        x = np.linspace(0,self.d['train_args']['epochs'] ,1)  # X轴数据（0-10，100个点）
+        y = np.array(rewards)                # Y轴数据（正弦曲线）
 
-                # 创建画布
-                plt.figure(figsize=(10, 6))  # 设置画布尺寸（宽10英寸，高6英寸）
+        # 创建画布
+        plt.figure(figsize=(10, 6))  # 设置画布尺寸（宽10英寸，高6英寸）
 
-                # 绘制折线
-                plt.plot(x, y, 
-                        color='#1f77b4',   # 线条颜色（十六进制）
-                        linestyle='-',     # 实线
-                        linewidth=2,       # 线宽
-                        label='正弦曲线')   # 图例标签 
-                plt.savefig(f'reward{batch_idx}.png')
-
-        
-
+        # 绘制折线
+        plt.plot(x, y, 
+                color='#1f77b4',   # 线条颜色（十六进制）
+                linestyle='-',     # 实线
+                linewidth=2,       # 线宽
+                label='正弦曲线')   # 图例标签 
+        plt.savefig(f'reward{batch_idx}.png')
             
 def to_device(obj, device):
     if isinstance(obj, torch.Tensor):

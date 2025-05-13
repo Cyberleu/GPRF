@@ -8,7 +8,6 @@ from plan import GlobalPlan
 from net import Net
 import re
 from collections import defaultdict
-from sklearn.preprocessing import StandardScaler
 import numpy as np
 import psycopg2
 import torch
@@ -52,10 +51,12 @@ class Env():
         # 记录每个query的cost
         self.query_costs = {}
         self.view_costs = {}
-        self.eval_net = Net(d_out = self.N_rels * self.N_rels).to(self.device)
-        self.target_net = Net(d_out = self.N_rels * self.N_rels).to(self.device)
+        self.out = self.N_rels * self.N_rels
+        self.eval_net = Net(self).to(self.device)
+        self.target_net = Net(self).to(self.device)
         self.plan_encoder = PlanEncoder(self)
-        self.query_encoder = QueryEncoder(self)
+        # self.query_encoder = QueryEncoder(self)
+        self.simple_encoder = SimpleEncoder(self)
         self.sql_names = []
         self.tables_encode = torch.zeros((0, self.N_rels)).to(self.device)
         # 记录batch执行的最短时间,在reset时不更新
@@ -167,8 +168,6 @@ class Env():
                     join_list = self.plan.get_joinable_list(n1, n2)
                     for join in join_list:  
                         m[self.rel_to_idx[join[0]]][self.rel_to_idx[join[1]]] = 1
-        if not m.any():
-            print(1)
         return m
                            
     # def get_mask(self):
@@ -228,7 +227,10 @@ class Env():
         return self.global_plan.get_shared_node_entry_num(root)
     
     def get_state(self):
-        return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
+        return self.simple_encoder.encode()
+
+    # def get_state(self):
+    #     return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
         
     def reward(self, exec_time = False):
         if not self.is_done():
@@ -350,7 +352,6 @@ if __name__ == '__main__':
         env_config = json.load(f)
     # pe = PlanEncoder(env_config)
     # encoded_p = pe.encode(p)
-    qe = QueryEncoder(env_config)
+    # qe = QueryEncoder(env_config)
     encoded_p = qe.encode(p)
-    print(1)
 
