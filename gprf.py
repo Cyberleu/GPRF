@@ -43,7 +43,6 @@ class Agent(nn.Module):
         self.target_net = target_net
         self.learn_step_counter = 0
         self.device = device
-        self.eps = eps
         self.loss_func = nn.MSELoss().to(self.device)
         self.optimizer = torch.optim.Adam(self.eval_net.parameters(),lr=LR)
         if config.d['sys_args']['use_per']:
@@ -51,7 +50,14 @@ class Agent(nn.Module):
         else:
             self.er = NormalReplayBuffer()
         self.target_replace_iter = config.d['train_args']['target_replace_iter']
-
+        self.epsilon_start = config.d['train_args']['epsilon_start']
+        self.epsilon_end = config.d['train_args']['epsilon_end']
+        self.epsilon_decay = config.d['train_args']['epsilon_decay']
+        self.use_dynamic_epsilon = config.d['sys_args']['use_dynamic_epsilon']
+        if self.use_dynamic_epsilon:
+            self.eps = self.epsilon_start
+        else:
+            self.eps = eps
         # if self.net.pretrained_path:
         #     self.net.load_state_dict(torch.load(self.net.pretrained_path))
         #     if len(self.net.fit_pretrained_layers) > 0:
@@ -176,6 +182,7 @@ class Agent(nn.Module):
 
         abs_errors = torch.abs(q_eval - q_target).detach().cpu().numpy().squeeze()
         self.er.update_error(indexes, abs_errors)  # 更新经验的优先级
+    
 
         self.learn_step_counter += 1
 
@@ -249,18 +256,19 @@ class GPRF():
         self.env_config = config.env_config
         self.sql_names = list(self.env_config['db_data'].keys())
         self.env = Env()
-        self.agent = Agent(self.env.eval_net,self.env.target_net, device = self.env.device)
+        self.agent = Agent(self.env.eval_net,self.env.target_net, eps = config.d['train_args']['epsilon'], device = self.env.device)
         self.count = 0
     def run(self):
-        avg_rewards = []
+        total_rewards = []
         for epoch in range(self.d['train_args']['epochs']):
         # 模拟实际情况，sql按批到来
+            epoch_reward = 0
             batches = random_batch_splitter(self.sql_names, config.d['sys_args']['sql_batch_size'])
             for batch_idx in range(len(batches)):
                 batch = batches[batch_idx]
                 rewards = []
                 for ep in range(self.d['train_args']['episodes']):
-                    total_reward = 0
+                    episode_reward = 0
                     self.env.reset(batch)
                     state = self.env.get_state()
                     while not self.env.is_complete():
@@ -270,31 +278,28 @@ class GPRF():
                         action = self.agent.predict(state, mask)   
                         next_state ,reward, is_done,  next_mask, is_complete= self.env.step(action)
                         self.agent.store_transition(state, action, reward, next_state, is_done, next_mask, is_complete) 
-                        total_reward += reward
+                        episode_reward += reward
                         if is_done:
                             # 在plan的最终结果出来后更新前面的所有reward,update_count表示前面涉及到了几个join，总join数应是表数-1，出去最后一次，所以要-2
                             # update_count = len(self.env.global_plan.singlePlans[-1].alias_to_table)-1
                             # self.agent.ts.update_reward(reward, update_count)
                             self.agent.learn()
-                            print(f'当前训练进度 epoch:{epoch} batch_idx:{batch_idx} episode:{ep} sql_name:{self.env.sql_names[self.env.plan_idx-1]}')
+                            # print(f'当前训练进度 epoch:{epoch} batch_idx:{batch_idx} episode:{ep} sql_name:{self.env.sql_names[self.env.plan_idx-1]}')
 
-                            # ## mod by dhp
-                            # sql_name = self.env.sql_names[self.env.plan_idx-1]
-                            # safe_sql_name = re.sub(r'[\/:*?"<>|]', '_', sql_name)  # 替换非法文件名字符
-                            # # 目标目录
-                            # output_dir = "./output4dhp1"
-                            # os.makedirs(output_dir, exist_ok=True)  # 自动创建目录
-                            # # 目标文件路径
-                            # file_path = os.path.join(output_dir, f"{safe_sql_name}.txt")
-                            # with open(file_path, "a", encoding="utf-8") as f:  # "a" 表示追加模式
-                            #     f.write(new_sql + "\n")  # 多个 SQL 之间留空行
                         
                         state = next_state
                         if is_complete:
-                            logging.info(f'epoch:{epoch} batch_idx:{batch_idx} episode:{ep} total_reward:{total_reward} final_reward:{reward}')
-                            rewards.append(total_reward)
+                            # logging.info(f'epoch:{epoch} batch_idx:{batch_idx} episode:{ep} total_reward:{episode_reward}')
+                            rewards.append(episode_reward)
                 avg_reward = sum(rewards)/len(rewards)
-                avg_rewards.append(avg_reward)
+                epoch_reward += avg_reward
+            epoch_reward = epoch_reward/config.d['sys_args']['sql_batch_size']
+            logging.info(f'epoch:{epoch} total_reward:{epoch_reward}')
+            total_rewards.append(epoch_reward)
+            if self.agent.use_dynamic_epsilon:
+                self.agent.eps = self.agent.epsilon_end + (self.agent.epsilon_start - self.agent.epsilon_end) * \
+                    np.exp(-1.0 * epoch / self.agent.epsilon_decay) if self.agent.epsilon_end + (self.agent.epsilon_start - self.agent.epsilon_end) * \
+                    np.exp(-1.0 * epoch / self.agent.epsilon_decay) > self.agent.epsilon_end else self.agent.epsilon_end
         x = np.linspace(0,self.d['train_args']['epochs'] ,1)  # X轴数据（0-10，100个点）
         y = np.array(rewards)                # Y轴数据（正弦曲线）
 

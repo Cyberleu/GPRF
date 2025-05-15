@@ -673,7 +673,7 @@ def drop_all_views():
         views = cursor.fetchall()
 
         if not views:
-            print("数据库中没有可删除的视图")
+            # print("数据库中没有可删除的视图")
             return
 
         # 生成批量删除语句（使用 CASCADE 处理依赖关系）
@@ -711,7 +711,7 @@ def generate_env_config():
         env_config['db_data'][query_name] = [query_tables, reverse_aliases_dict, query_conditions, query_select, q,query_name,cost, time]
     with open(config.env_path, "w") as f:
         json.dump(env_config, f)
-# generate_env_config()
+generate_env_config()
 # if __name__ == '__main__':
 #     job_train_path = config.d['sys_args']['job_train_path']
 #     x_train = glob.glob(job_train_path + "13.sql")
