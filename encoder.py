@@ -261,19 +261,19 @@ class PlanEncoder(Encoder):
 #         conn.close()
 
 # 实现rejoin的编码方式
-class SimpleEncoder(Encoder):
+class RejoinEncoder(Encoder):
     def __init__(self, env):
-        super(SimpleEncoder ,self).__init__(env)
+        super(RejoinEncoder ,self).__init__(env)
     # 返回单个plan的编码
     def encode_singleplan(self, plan):
-        plan = SinglePlan()
         mat = torch.zeros((self.env.N_rels, self.env.N_rels)).to(self.device)
-        for i in range(len(plan.roots)):
-            root = plan.roots[i]
+        roots = list(plan.roots)
+        for i in range(len(roots)):
+            root = roots[i]
             depth = 1
             for layer in nx.bfs_layers(plan.G, sources=[root]):
                 for node in layer:
-                    node_data = self.G.nodes[node]
+                    node_data = plan.G.nodes[node]
                     if node_data['type'] == 'Scan':
                         mat[i][self.env.rel_to_idx[list(node_data['tables'])[0]]] = 1/depth
                 depth += 1
@@ -292,7 +292,64 @@ class SimpleEncoder(Encoder):
         else:
             pb_vec = self.encode_singleplan(self.env.plans[self.env.plan_idx])
         return gb_vec, pb_vec
-        
+
+# 前序+中序遍历确定唯一一棵树
+class TraverseEncoder(Encoder):
+    def __init__(self, env):
+        super(TraverseEncoder ,self).__init__(env)
+    def encode_singleplan(self, plan):
+        mat = torch.zeros((self.env.N_rels, 2*self.env.N_rels)).to(self.device)
+        roots = list(plan.roots)
+        for i in range(len(roots)):
+            root = roots[i]
+            pre_order = list(nx.dfs_preorder_nodes(plan.G, source=root))
+            in_order = dfs_inorder_nodes(plan.G, root)
+            # index表示该表在order序列中的位置
+            index = 1
+            for node in pre_order:
+                node_data = plan.G.nodes[node]
+                if node_data['type'] == 'Scan':
+                    mat[i][self.env.rel_to_idx[list(node_data['tables'])[0]]] = 1/index
+                    index += 1
+            index = 1
+            for node in in_order:
+                node_data = plan.G.nodes[node]
+                if node_data['type'] == 'Scan':
+                    mat[i][self.env.N_rels + self.env.rel_to_idx[list(node_data['tables'])[0]]] = 1/index
+                    index += 1
+        return mat.view(-1)
+    def encode(self):
+        gb_vec = torch.empty(0).to(self.device)
+        # global plan里的
+        for plan in self.env.global_plan.singlePlans:
+            gb_vec = torch.cat((gb_vec, self.encode_singleplan(plan)))
+        # 当前和剩余的
+        for i in range(self.env.plan_idx, len(self.env.plans),1):
+            plan = self.env.plans[i]
+            gb_vec = torch.cat((gb_vec, self.encode_singleplan(plan)))
+        if self.env.plan_idx == len(self.env.plans):
+            pb_vec = self.encode_singleplan(self.env.plans[self.env.plan_idx-1])
+        else:
+            pb_vec = self.encode_singleplan(self.env.plans[self.env.plan_idx])
+        return gb_vec, pb_vec
+# 递归实现中序遍历
+def dfs_inorder_nodes(G, root, visited=None):
+    if visited is None:
+        visited = []
+    # 获取所有子节点（需确保左子节点在前）
+    children = sorted(G.successors(root))  # 假设子节点按左→右排序
+    
+    # 左子树递归
+    if len(children) >= 1:
+        dfs_inorder_nodes(G, children[0], visited)
+    # 记录根节点
+    visited.append(root)
+    # 右子树递归
+    if len(children) >= 2:
+        dfs_inorder_nodes(G, children[1], visited)
+    return visited
+
+
 
 
         

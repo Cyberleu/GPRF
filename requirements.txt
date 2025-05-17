@@ -1,0 +1,5 @@
+torch_geometric
+moz_sql_parser
+psycopg2
+tensorboard
+pygraphviz

@@ -56,13 +56,16 @@ class Env():
         self.target_net = Net(self).to(self.device)
         self.plan_encoder = PlanEncoder(self)
         # self.query_encoder = QueryEncoder(self)
-        self.simple_encoder = SimpleEncoder(self)
+        # self.simple_encoder = RejoinEncoder(self)
+        self.simple_encoder = TraverseEncoder(self)
         self.sql_names = []
         self.tables_encode = torch.zeros((0, self.N_rels)).to(self.device)
         # 记录batch执行的最短时间,在reset时不更新
         self.db_data = config.env_config['db_data']
         self.batch_cost = dict() # {(sql_name, sql_name...) : (total_cost, total_time)}
         self.batch_dict = {}
+        # reward中的权重系数
+        self.alpha = 1
 
     def get_obs(self):
         """
@@ -125,7 +128,7 @@ class Env():
         if is_done:
             self.global_plan.merge(deepcopy(self.plan))
         # reward = self.reward(exec_time = False)
-        reward = self.reward_subtree()
+        reward = self.reward()
         if is_done:
             self.plan_idx += 1
             if self.plan_idx < len(self.plans):
@@ -186,11 +189,12 @@ class Env():
     # 通过增量的方式获取GlobalPlan的cost,判断新加的plan是否能共享
     def get_cost(self, exec_time = False):
         root = self.global_plan.roots[-1]
+        plan_idx = len(self.global_plan.roots)-1
         sql_name = self.global_plan.singlePlans[-1].sql_name
         shared_nodes = []
         # 因为已经merge，所以只需要获取所有包含该root的share_list即可。
         for node, node_data in self.global_plan.G.nodes.items():
-            if node_data['type'] == 'Share' and root in node_data['share_list']:
+            if node_data['type'] == 'Share' and plan_idx in node_data['share_list']:
                 shared_nodes.append(node)
         if(len(shared_nodes) == 0):
             # 无共享节点， 则直接加上该sql的cost
@@ -204,11 +208,12 @@ class Env():
             for node in shared_nodes:
                 share_list = self.global_plan.G.nodes[node]['share_list']
                 assert len(share_list) >= 2
-                if len(share_list) == 2:
-                    view_sql = self.global_plan.generate_sql(node, True)
-                    view_cost, view_time = get_cost_from_db(view_sql, self.conn, is_view = True, exec_time=True)
-                    self.view_costs[node] = view_time if exec_time else view_cost
-                    influcned_roots.add(share_list[0])
+                # if len(share_list) == 2:
+                # 即使已有的mv也需要重新生成，因为可能会有新加入的列和谓词
+                view_sql = self.global_plan.generate_sql(node, True)
+                view_cost, view_time = get_cost_from_db(view_sql, self.conn, is_view = True, exec_time=False)
+                self.view_costs[node] = view_time if exec_time else view_cost
+                influcned_roots.add(self.global_plan.roots[share_list[0]])
             influcned_roots.add(root)
             for node in list(influcned_roots):
                 index = self.global_plan.roots.index(node)
@@ -217,7 +222,7 @@ class Env():
                 query_cost, query_time = get_cost_from_db(query_sql, self.conn, exec_time = exec_time,baseline_cost=config.env_config['db_data'][sql_name][-2], baseline_time=config.env_config['db_data'][sql_name][-1])
                 self.query_costs[query_sql] = query_time if exec_time else query_cost
         # TODO:sum(list(self.view_costs.values())) 
-        return sum(list(self.query_costs.values())), query_sql
+        return sum(list(self.query_costs.values()))
     
     # def get_tables_encode(self):
 
@@ -227,16 +232,25 @@ class Env():
         return self.global_plan.get_shared_node_entry_num(root)
     
     def get_state(self):
-        return self.simple_encoder.encode()
+        return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), *self.simple_encoder.encode()
+
+    
+    # def get_state(self):
+    #     return self.simple_encoder.encode()
 
     # def get_state(self):
     #     return self.plan_encoder.encode(self.global_plan), self.plan_encoder.encode(self.plan), self.tables_encode
         
     def reward(self, exec_time = False):
+        r1 = self.reward_cost(exec_time)
+        r2 = self.reward_subtree()
+        return self.alpha * r1 + r2
+    
+    def reward_cost(self, exec_time):
         if not self.is_done():
             return 0
         else:
-            cost, new_sql = self.get_cost(exec_time=exec_time)
+            cost = self.get_cost(exec_time=exec_time)
             baseline_cost = 0
             batch_sql_names = frozenset(self.sql_names[:self.plan_idx+1])
             # batch_cost中保存的是经验池，如果不在batch_cost中则直接按db_data中的cost之和当作baseline
@@ -246,7 +260,7 @@ class Env():
             else:
                 baseline_cost = self.batch_cost[batch_sql_names][1] if exec_time else self.batch_cost[batch_sql_names][0]
             reward = - np.log(cost/baseline_cost)
-            return reward, new_sql
+            return reward
     
     # 该reward只考虑公共子树的数量和子树的大小
     def reward_subtree(self):

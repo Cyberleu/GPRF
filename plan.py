@@ -523,7 +523,7 @@ class GlobalPlan:
                 press.append(pres)
                 # 首次添加share，需要把原来的plan_idx也加上
                 if len(self.G.nodes[node1]["share_list"]) == 0:
-                    node1_plan_index = node1.split('_')[0]
+                    node1_plan_index = int(node1.split('_')[0])
                     # node1_root = get_root(self.G, node1)
                     # TODO: bug：node1_root不在self.roots中
                     # try:
@@ -652,7 +652,7 @@ class GlobalPlan:
             assert node_idx in self.roots
         sql = ''
         if is_view:
-            sql += f'CREATE MATERIALIZED VIEW VIEW_{node_idx} AS '
+            sql += f'CREATE VIEW VIEW_{node_idx} AS '
             select_stmt = ''
             for alias, col in list(self.G.nodes[node_idx]['select_cols']):
                 select_stmt += f'{alias}.{col} AS {alias}_{col} , '

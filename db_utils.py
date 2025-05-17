@@ -329,14 +329,23 @@ def get_cost_from_db(sql_query, conn, is_view = False, exec_time=False, time_lim
     cur = conn.cursor()
     try:
         cur.execute(DB_SETTINGS)
+        # 先删除物化视图
+        if is_view:
+            pattern = r'CREATE\s+VIEW\s+([^\s]+)'
+            match = re.search(pattern, sql_query, re.IGNORECASE)
+            view_name = match.group(1)
+            drop_view(view_name)
+            cur.execute(f"""EXPLAIN (FORMAT JSON){'CREATE MATERIALIZED ' + sql_query[7:]}""")
+            cost_rows = cur.fetchall()
+            cur.execute(sql_query)
+        else:
         # 对于物化视图生成的语句不设置时间限制
-        if not is_view:
             cur.execute(f"""SET statement_timeout = {time_limit};COMMIT; """)
-        cur.execute(f"""
-        EXPLAIN (FORMAT JSON)
-        {sql_query}
-        """)
-        cost_rows = cur.fetchall()
+            cur.execute(f"""
+            EXPLAIN (FORMAT JSON)
+            {sql_query}
+            """)
+            cost_rows = cur.fetchall()
     except Exception as e:
         cur.close()
         db_rollback(conn)
@@ -628,6 +637,43 @@ def scheme_to_minmax_scheme(conn, scheme):
                 minmax_scheme[table_name][column] = {'numeric': False}
     return minmax_scheme
 
+def drop_view(view_name):
+    try:
+        # 连接数据库
+        conn = config.conn
+        cursor = conn.cursor()
+        drop_command = f'DROP VIEW IF EXISTS {view_name} CASCADE;'.format(view_name = view_name)
+        cursor.execute(drop_command)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"操作失败: {e}")  
+
+def drop_all_views():
+    
+    try:
+        conn = config.conn
+        cursor = conn.cursor()
+        # 获取所有普通视图名称
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.views 
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema');
+        """)
+        regular_views = [row[0] for row in cursor.fetchall()]
+
+        # 生成并执行普通视图删除语句
+        for view in regular_views:
+            cursor.execute(f"DROP VIEW IF EXISTS {view} CASCADE;")
+
+        # 提交事务
+        conn.commit()
+        print("所有视图已删除！")
+
+    except Exception as e:
+        conn.rollback()
+        print(f"操作失败: {e}")
+
 def drop_all_materialized_views():
     try:
         # 连接数据库
@@ -659,38 +705,38 @@ def drop_all_materialized_views():
         conn.rollback()
         print(f"操作失败: {e}")
         
-def drop_all_views():
-    try:
-        # 连接数据库
-        conn = config.conn
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_type = 'VIEW' 
-              AND table_schema = 'public';
-        """)
-        views = cursor.fetchall()
+# def drop_all_views():
+#     try:
+#         # 连接数据库
+#         conn = config.conn
+#         cursor = conn.cursor()
+#         cursor.execute("""
+#             SELECT table_name 
+#             FROM information_schema.tables 
+#             WHERE table_type = 'VIEW' 
+#               AND table_schema = 'public';
+#         """)
+#         views = cursor.fetchall()
 
-        if not views:
-            # print("数据库中没有可删除的视图")
-            return
+#         if not views:
+#             # print("数据库中没有可删除的视图")
+#             return
 
-        # 生成批量删除语句（使用 CASCADE 处理依赖关系）
-        drop_commands = [
-            sql.SQL("DROP VIEW IF EXISTS {view_name} CASCADE").format(
-                view_name=sql.Identifier(view[0])
-            ) for view in views
-        ]
+#         # 生成批量删除语句（使用 CASCADE 处理依赖关系）
+#         drop_commands = [
+#             sql.SQL("DROP VIEW IF EXISTS {view_name} CASCADE").format(
+#                 view_name=sql.Identifier(view[0])
+#             ) for view in views
+#         ]
 
-        # 执行删除操作
-        for cmd in drop_commands:
-            cursor.execute(cmd)
-            # 提交事务
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        print(f"操作失败: {e}")
+#         # 执行删除操作
+#         for cmd in drop_commands:
+#             cursor.execute(cmd)
+#             # 提交事务
+#         conn.commit()
+#     except Exception as e:
+#         conn.rollback()
+#         print(f"操作失败: {e}")
 
 
 def generate_env_config():
